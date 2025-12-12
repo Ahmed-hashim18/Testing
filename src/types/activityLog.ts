@@ -4,6 +4,7 @@ export type ActivityModule =
   | "sales"
   | "purchases"
   | "products"
+  | "accounts"
   | "chart_of_accounts"
   | "accounting"
   | "hr_payroll"

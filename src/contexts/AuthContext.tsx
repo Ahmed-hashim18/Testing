@@ -268,6 +268,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.user) {
         setSession(data.session);
         
+        // Update last login timestamp immediately (non-blocking)
+        supabase
+          .from('profiles')
+          .update({ last_login: new Date().toISOString() })
+          .eq('id', data.user.id)
+          .catch((error) => {
+            console.warn('Failed to update last_login during login:', error);
+          });
+        
         // Set basic user immediately so login doesn't block
         const basicUser: User = {
           id: data.user.id,

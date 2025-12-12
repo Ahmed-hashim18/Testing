@@ -124,18 +124,13 @@ export default function Purchases() {
   };
 
   const handleBulkMarkPaid = async () => {
-    const updates = purchases
-      .filter(p => selectedIds.has(p.id))
-      .map(p => ({ 
-        amountPaid: p.total, 
-        balance: 0,
-        paymentDate: new Date().toISOString()
-      }));
-    
+    // Mark all selected as fully paid
     await bulkUpdateStatus({ 
       ids: Array.from(selectedIds), 
       status: "paid",
-      updateData: updates[0]
+      updateData: {
+        paymentDate: new Date().toISOString()
+      }
     });
     setSelectedIds(new Set());
   };

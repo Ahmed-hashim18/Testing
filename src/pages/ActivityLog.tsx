@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Activity, Download } from "lucide-react";
+import { Activity, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityLogFilters, FilterState } from "@/components/activityLog/ActivityLogFilters";
 import { ActivityLogTable } from "@/components/activityLog/ActivityLogTable";
@@ -7,9 +7,22 @@ import { useActivityLogs } from "@/hooks/useActivityLog";
 import { LoadingSpinner } from "@/components/loading/LoadingSpinner";
 import { Badge } from "@/components/ui/badge";
 import { CollapsibleFilters } from "@/components/common/CollapsibleFilters";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
 
 export default function ActivityLog() {
-  const { activityLogs, isLoading } = useActivityLogs();
+  const { activityLogs, isLoading, resetActivityLogs } = useActivityLogs();
+  const { toast } = useToast();
   const [filters, setFilters] = useState<FilterState>({
     search: "",
     module: "all",
@@ -17,6 +30,9 @@ export default function ActivityLog() {
     dateRange: "7",
     userId: "all",
   });
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetDays, setResetDays] = useState<number | undefined>(undefined);
+  const [isResetting, setIsResetting] = useState(false);
 
   const filteredLogs = useMemo(() => {
     let filtered = [...activityLogs];
@@ -64,6 +80,29 @@ export default function ActivityLog() {
     console.log("Exporting activity logs...", filteredLogs);
   };
 
+  const handleReset = async () => {
+    try {
+      setIsResetting(true);
+      await resetActivityLogs({ olderThanDays: resetDays });
+      toast({
+        title: "Activity logs reset",
+        description: resetDays 
+          ? `Deleted logs older than ${resetDays} days` 
+          : "All activity logs deleted",
+      });
+      setResetDialogOpen(false);
+      setResetDays(undefined);
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to reset activity logs",
+        variant: "destructive",
+      });
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center min-h-[400px]">
@@ -85,10 +124,16 @@ export default function ActivityLog() {
             Monitor and track all system activities across modules
           </p>
         </div>
-        <Button onClick={handleExport} variant="outline" className="gap-2">
-          <Download className="h-4 w-4" />
-          Export Logs
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={handleExport} variant="outline" className="gap-2">
+            <Download className="h-4 w-4" />
+            Export Logs
+          </Button>
+          <Button onClick={() => setResetDialogOpen(true)} variant="outline" className="gap-2 text-destructive hover:text-destructive">
+            <Trash2 className="h-4 w-4" />
+            Reset Logs
+          </Button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -138,6 +183,56 @@ export default function ActivityLog() {
 
       {/* Table */}
       <ActivityLogTable logs={filteredLogs} />
+
+      {/* Reset Dialog */}
+      <Dialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset Activity Logs</DialogTitle>
+            <DialogDescription>
+              This action cannot be undone. You can delete all logs or only logs older than a specified number of days.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="reset-option">Reset Option</Label>
+              <Select 
+                value={resetDays === undefined ? "all" : "older"} 
+                onValueChange={(value) => setResetDays(value === "all" ? undefined : 30)}
+              >
+                <SelectTrigger id="reset-option">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Delete All Logs</SelectItem>
+                  <SelectItem value="older">Delete Logs Older Than X Days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {resetDays !== undefined && (
+              <div className="space-y-2">
+                <Label htmlFor="days">Days</Label>
+                <Input
+                  id="days"
+                  type="number"
+                  min="1"
+                  value={resetDays}
+                  onChange={(e) => setResetDays(parseInt(e.target.value) || 30)}
+                  placeholder="30"
+                />
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetDialogOpen(false)} disabled={isResetting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleReset} disabled={isResetting}>
+              {isResetting ? "Resetting..." : "Reset Logs"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

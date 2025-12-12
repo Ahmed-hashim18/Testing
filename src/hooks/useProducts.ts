@@ -2,10 +2,12 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Product } from "@/types/product";
 import { toast } from "sonner";
+import { useActivityLogs } from "./useActivityLog";
 
 export function useProducts() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const { createActivityLog } = useActivityLogs();
 
   useEffect(() => {
     fetchProducts();
@@ -18,7 +20,8 @@ export function useProducts() {
         .from("products")
         .select(`
           *,
-          vendor:vendors(name)
+          vendor:vendors(name),
+          creator:profiles!created_by(id, name, email)
         `)
         .order("created_at", { ascending: false });
 
@@ -43,7 +46,7 @@ export function useProducts() {
         imageUrl: p.image_url || undefined,
         createdAt: p.created_at,
         updatedAt: p.updated_at || undefined,
-        createdBy: p.created_by || "System",
+        createdBy: p.creator?.name || p.creator?.email || p.created_by || "System",
       }));
 
       setProducts(mappedProducts);
@@ -80,6 +83,24 @@ export function useProducts() {
 
       if (error) throw error;
 
+      // Create activity log
+      try {
+        await createActivityLog({
+          module: "products",
+          actionType: "create",
+          description: `Created product ${productData.name} (SKU: ${productData.sku})`,
+          entityType: "product",
+          entityId: data.id,
+          metadata: {
+            sku: productData.sku,
+            name: productData.name,
+            price: productData.sellingPrice,
+          },
+        });
+      } catch (logError) {
+        console.error("Error creating activity log:", logError);
+      }
+
       toast.success("Product created successfully");
       await fetchProducts();
       return data;
@@ -110,6 +131,22 @@ export function useProducts() {
         .eq("id", id);
 
       if (error) throw error;
+
+      // Create activity log
+      try {
+        await createActivityLog({
+          module: "products",
+          actionType: "update",
+          description: `Updated product ${productData.name || id}`,
+          entityType: "product",
+          entityId: id,
+          metadata: {
+            changes: Object.keys(productData),
+          },
+        });
+      } catch (logError) {
+        console.error("Error creating activity log:", logError);
+      }
 
       toast.success("Product updated successfully");
       await fetchProducts();

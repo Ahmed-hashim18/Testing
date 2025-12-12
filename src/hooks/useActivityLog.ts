@@ -29,6 +29,8 @@ export function useActivityLogs() {
         return [];
       }
 
+      // Map logs - for delete actions, we show them. For others, we keep them but mark if entity is deleted
+      // Note: We don't filter out deleted records, but mark them for UI indication
       return data.map((log: any) => ({
         id: log.id,
         module: log.module as ActivityModule,
@@ -98,11 +100,30 @@ export function useActivityLogs() {
     },
   });
 
+  const resetActivityLogs = useMutation({
+    mutationFn: async ({ olderThanDays }: { olderThanDays?: number }) => {
+      let query = supabase.from("activity_logs").delete();
+      
+      if (olderThanDays) {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+        query = query.lt("created_at", cutoffDate.toISOString());
+      }
+      
+      const { error } = await query;
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["activityLogs"] });
+    },
+  });
+
   return {
     activityLogs: activityLogsQuery.data ?? [],
     isLoading: activityLogsQuery.isLoading,
     error: activityLogsQuery.error,
     createActivityLog: createActivityLog.mutateAsync,
+    resetActivityLogs: resetActivityLogs.mutateAsync,
   };
 }
 

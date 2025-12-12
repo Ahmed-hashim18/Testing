@@ -372,6 +372,36 @@ export function PurchaseFormDialog({ purchase, open, onOpenChange, onSave, vendo
                 <span className="font-semibold">Total</span>
                 <span className="font-bold">{total.toFixed(2)} MRU</span>
               </div>
+              {(purchase || formData.status === "paid" || formData.status === "received") && (
+                <>
+                  <div className="flex justify-between items-center gap-4 border-t pt-2">
+                    <Label htmlFor="amountPaid" className="text-muted-foreground">Amount Paid</Label>
+                    <Input
+                      id="amountPaid"
+                      type="number"
+                      value={formData.amountPaid || 0}
+                      onChange={(e) => {
+                        const paid = Number(e.target.value) || 0;
+                        setFormData({ 
+                          ...formData, 
+                          amountPaid: paid,
+                          balance: total - paid 
+                        });
+                      }}
+                      className="w-32 text-right"
+                      step="0.01"
+                      min="0"
+                      max={total}
+                    />
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Balance</span>
+                    <span className={`font-semibold ${(total - (formData.amountPaid || 0)) > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                      {(total - (formData.amountPaid || 0)).toFixed(2)} MRU
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

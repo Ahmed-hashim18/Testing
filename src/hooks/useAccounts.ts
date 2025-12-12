@@ -3,9 +3,11 @@ import { useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Account, AccountType, AccountStatus } from "@/types/account";
 import { toast } from "@/lib/toast";
+import { useActivityLogs } from "./useActivityLog";
 
 export function useAccounts() {
   const queryClient = useQueryClient();
+  const { createActivityLog } = useActivityLogs();
 
   // Initial data fetch on mount
   useEffect(() => {
@@ -128,6 +130,25 @@ export function useAccounts() {
         .single();
 
       if (error) throw error;
+      
+      // Create activity log
+      try {
+        await createActivityLog({
+          module: "accounts",
+          actionType: "create",
+          description: `Created account ${accountData.code} - ${accountData.name}`,
+          entityType: "account",
+          entityId: data.id,
+          metadata: {
+            code: accountData.code,
+            name: accountData.name,
+            type: accountData.type,
+          },
+        });
+      } catch (logError) {
+        console.error("Error creating activity log:", logError);
+      }
+      
       return data;
     },
     onSuccess: () => {
@@ -151,6 +172,13 @@ export function useAccounts() {
         'Expenses': 'expense',
       };
       
+      // Get account data before update for activity log
+      const { data: accountBefore } = await supabase
+        .from("accounts")
+        .select("code, name")
+        .eq("id", id)
+        .single();
+      
       const updateData: any = {
         code: data.code,
         name: data.name,
@@ -170,6 +198,22 @@ export function useAccounts() {
         .eq("id", id);
 
       if (error) throw error;
+      
+      // Create activity log
+      try {
+        await createActivityLog({
+          module: "accounts",
+          actionType: "update",
+          description: `Updated account ${accountBefore?.code || id} - ${accountBefore?.name || ''}`,
+          entityType: "account",
+          entityId: id,
+          metadata: {
+            changes: Object.keys(data),
+          },
+        });
+      } catch (logError) {
+        console.error("Error creating activity log:", logError);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -196,8 +240,32 @@ export function useAccounts() {
         throw new Error("No se puede eliminar una cuenta importada. Las cuentas importadas son permanentes.");
       }
 
+      // Get account data before deletion for activity log
+      const { data: accountBefore } = await supabase
+        .from("accounts")
+        .select("code, name")
+        .eq("id", id)
+        .single();
+      
       const { error } = await supabase.from("accounts").delete().eq("id", id);
       if (error) throw error;
+      
+      // Create activity log
+      try {
+        await createActivityLog({
+          module: "accounts",
+          actionType: "delete",
+          description: `Deleted account ${accountBefore?.code || id} - ${accountBefore?.name || ''}`,
+          entityType: "account",
+          entityId: id,
+          metadata: {
+            code: accountBefore?.code,
+            name: accountBefore?.name,
+          },
+        });
+      } catch (logError) {
+        console.error("Error creating activity log:", logError);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -225,8 +293,35 @@ export function useAccounts() {
         throw new Error(`No se pueden eliminar cuentas importadas: ${importedCodes}. Las cuentas importadas son permanentes.`);
       }
 
+      // Get accounts before deletion for activity log
+      const { data: accountsBefore } = await supabase
+        .from("accounts")
+        .select("id, code, name")
+        .in("id", ids);
+      
       const { error } = await supabase.from("accounts").delete().in("id", ids);
       if (error) throw error;
+      
+      // Create activity log for each deleted account
+      if (accountsBefore) {
+        for (const account of accountsBefore) {
+          try {
+            await createActivityLog({
+              module: "accounts",
+              actionType: "delete",
+              description: `Deleted account ${account.code} - ${account.name}`,
+              entityType: "account",
+              entityId: account.id,
+              metadata: {
+                code: account.code,
+                name: account.name,
+              },
+            });
+          } catch (logError) {
+            console.error("Error creating activity log:", logError);
+          }
+        }
+      }
     },
     onSuccess: (_, ids) => {
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -252,40 +347,123 @@ export function useAccounts() {
         'Expenses': 'expense',
       };
 
-      // First, resolve parent IDs for accounts with parent codes
-      const accountsToInsert = await Promise.all(
-        accountsData.map(async (acc) => {
-          let parentId = acc.parentId || null;
-          
-          // If parentId is a code, find the actual ID
-          if (parentId && !parentId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-            const { data: parent } = await supabase
-              .from("accounts")
-              .select("id")
-              .eq("code", parentId)
-              .single();
-            parentId = parent?.id || null;
-          }
-
-          return {
-            code: acc.code,
-            name: acc.name,
-            account_type: typeMap[acc.type || 'Assets'] || 'asset',
-            parent_id: parentId,
-            balance: acc.balance || 0,
-            description: acc.description || null,
-            status: acc.status || "active",
-            is_imported: true, // Mark as imported
-            created_by: user.id,
-          };
-        })
-      );
-
-      const { error } = await supabase
+      // Step 1: Resolve parent IDs that exist in database (non-batch)
+      // First, fetch all existing accounts to build code map
+      const { data: existingAccountsData } = await supabase
         .from("accounts")
-        .insert(accountsToInsert);
+        .select("id, code");
+      
+      const existingCodeToIdMap = new Map<string, string>();
+      if (existingAccountsData) {
+        existingAccountsData.forEach((acc: any) => {
+          existingCodeToIdMap.set(acc.code.toLowerCase(), acc.id);
+        });
+      }
 
-      if (error) throw error;
+      // Step 2: Prepare accounts for insert - store parentCode for accounts that need batch resolution
+      const accountsWithParentCodes: Array<{ accountIndex: number; parentCode: string }> = [];
+      const accountsToInsert = accountsData.map((acc, index) => {
+        let parentId = acc.parentId || null;
+        let parentCode: string | undefined = undefined;
+        
+        // If parentId is not set but we have parentCode in the data (from CSV), store it
+        if (!parentId && (acc as any).parentCode) {
+          parentCode = (acc as any).parentCode;
+          // Check if parent exists in existing accounts
+          const existingParentId = existingCodeToIdMap.get(parentCode.toLowerCase());
+          if (existingParentId) {
+            parentId = existingParentId;
+            parentCode = undefined; // Already resolved
+          } else {
+            accountsWithParentCodes.push({ accountIndex: index, parentCode });
+          }
+        } else if (parentId && !parentId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+          // If parentId looks like a code, check existing accounts
+          const existingParentId = existingCodeToIdMap.get(parentId.toLowerCase());
+          if (existingParentId) {
+            parentId = existingParentId;
+          } else {
+            parentCode = parentId; // Store code for later resolution
+            accountsWithParentCodes.push({ accountIndex: index, parentCode });
+            parentId = null;
+          }
+        }
+
+        const insertData = {
+          code: acc.code,
+          name: acc.name,
+          account_type: typeMap[acc.type || 'Assets'] || 'asset',
+          parent_id: parentId, // Will be null for batch-resolved parents
+          balance: acc.balance || 0,
+          description: acc.description || null,
+          status: acc.status || "active",
+          is_imported: true,
+          created_by: user.id,
+        };
+
+        return insertData;
+      });
+
+      // Step 2: Insert all accounts first (without parent_id for batch accounts)
+      const { data: insertedAccounts, error: insertError } = await supabase
+        .from("accounts")
+        .insert(accountsToInsert)
+        .select("id, code");
+
+      if (insertError) throw insertError;
+      if (!insertedAccounts) throw new Error("Failed to insert accounts");
+
+      // Step 3: Build code -> id map from inserted accounts AND existing accounts
+      const codeToIdMap = new Map<string, string>();
+      insertedAccounts.forEach((acc: any) => {
+        codeToIdMap.set(acc.code.toLowerCase(), acc.id);
+      });
+
+      // Also fetch all existing accounts to build complete map
+      const { data: allAccounts } = await supabase
+        .from("accounts")
+        .select("id, code");
+      
+      if (allAccounts) {
+        allAccounts.forEach((acc: any) => {
+          codeToIdMap.set(acc.code.toLowerCase(), acc.id);
+        });
+      }
+
+      // Step 4: Update parent_id for accounts that need it
+      const updates = accountsWithParentCodes
+        .filter(({ parentCode }) => {
+          const parentId = codeToIdMap.get(parentCode.toLowerCase());
+          if (!parentId) {
+            console.warn(`Parent account with code "${parentCode}" not found`);
+            return false;
+          }
+          return true;
+        })
+        .map(({ accountIndex, parentCode }) => {
+          const account = accountsToInsert[accountIndex];
+          return {
+            id: codeToIdMap.get(account.code.toLowerCase())!,
+            parent_id: codeToIdMap.get(parentCode.toLowerCase())!,
+          };
+        });
+
+      // Batch update parent_ids
+      if (updates.length > 0) {
+        // Update in batches to avoid overwhelming the database
+        const batchSize = 50;
+        for (let i = 0; i < updates.length; i += batchSize) {
+          const batch = updates.slice(i, i + batchSize);
+          await Promise.all(
+            batch.map((update) =>
+              supabase
+                .from("accounts")
+                .update({ parent_id: update.parent_id })
+                .eq("id", update.id)
+            )
+          );
+        }
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["accounts"] });

@@ -76,8 +76,8 @@ export function ImportAccountsDialog({ open, onOpenChange, onImport, existingAcc
       }
 
       const type = accountTypeMap[typeStr] || 'Assets';
+      // Try to find parent in existing accounts, but also store parentCode for batch resolution
       let parentId: string | null = null;
-
       if (parentCode) {
         const parentAccount = existingAccounts.find(acc => acc.code.toLowerCase() === parentCode.toLowerCase());
         if (parentAccount) {
@@ -85,15 +85,18 @@ export function ImportAccountsDialog({ open, onOpenChange, onImport, existingAcc
         }
       }
 
+      // Store parentCode separately - will be resolved after insert if not found in existing
       accounts.push({
         code,
         name,
         type,
-        parentId,
+        parentId: parentId, // Will be resolved after insert if null
         description,
         balance: isNaN(balance) ? 0 : balance,
         status: 'active',
-      });
+        // Store parentCode in a custom property for later resolution
+        ...(parentCode && !parentId ? { parentCode: parentCode } : {}),
+      } as any);
     }
 
     return accounts;

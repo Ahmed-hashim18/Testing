@@ -20,6 +20,8 @@ export function LowStockAlerts() {
   useEffect(() => {
     async function fetchLowStockItems() {
       try {
+        // Fetch all active products first, then filter in JavaScript
+        // This avoids the RPC call issue and ensures we get products where current_stock <= reorder_level
         const { data: products } = await supabase
           .from('products')
           .select(`
@@ -30,19 +32,31 @@ export function LowStockAlerts() {
             reorder_level,
             product_categories (name)
           `)
-          .lte('current_stock', supabase.rpc('reorder_level'))
-          .eq('status', 'active')
-          .order('current_stock', { ascending: true })
-          .limit(4);
+          .eq('status', 'active');
+        
+        // Filter products where current_stock <= reorder_level
+        const lowStockProducts = (products || []).filter(
+          product => product.current_stock <= product.reorder_level
+        );
+        
+        // Sort and limit
+        const sortedProducts = lowStockProducts
+          .sort((a, b) => a.current_stock - b.current_stock)
+          .slice(0, 5); // Get top 5, but we'll display 4 to prevent duplicates
 
-        const formattedItems: LowStockItem[] = products?.map(product => ({
+        // Remove duplicates by id (in case of any data issues)
+        const uniqueProducts = sortedProducts.filter(
+          (product, index, self) => index === self.findIndex(p => p.id === product.id)
+        );
+
+        const formattedItems: LowStockItem[] = uniqueProducts.slice(0, 4).map(product => ({
           id: product.id,
           name: product.name,
           sku: product.sku,
           currentStock: product.current_stock,
           minStock: product.reorder_level,
           category: (product.product_categories as any)?.name || 'Uncategorized',
-        })) || [];
+        }));
 
         setLowStockItems(formattedItems);
       } catch (error) {

@@ -42,6 +42,7 @@ export function usePurchases() {
         .select(`
           *,
           vendor:vendors(id, name),
+          creator:profiles!created_by(id, name, email),
           line_items:purchase_line_items(
             id,
             product_id,
@@ -55,33 +56,38 @@ export function usePurchases() {
 
       if (error) throw error;
 
-      return data.map((po) => ({
-        id: po.id,
-        orderNumber: po.order_number,
-        date: po.date,
-        vendorId: po.vendor_id,
-        vendorName: po.vendor?.name || "",
-        status: po.status as PurchaseStatus,
-        lineItems: po.line_items.map((li: any) => ({
-          id: li.id,
-          productId: li.product_id,
-          productName: li.product?.name || "",
-          quantity: li.quantity,
-          unitPrice: li.unit_price,
-          total: li.total,
-        })),
-        subtotal: po.subtotal,
-        tax: po.tax,
-        taxRate: po.tax_rate,
-        total: po.total,
-        amountPaid: po.amount_paid,
-        balance: po.balance,
-        notes: po.notes,
-        receivedDate: po.received_date,
-        paymentDate: po.payment_date,
-        createdAt: po.created_at,
-        createdBy: po.created_by,
-      })) as PurchaseOrder[];
+      return data.map((po) => {
+        // Get creator name or fallback to ID
+        const createdByName = po.creator?.name || po.creator?.email || po.created_by || "System";
+        
+        return {
+          id: po.id,
+          orderNumber: po.order_number,
+          date: po.date,
+          vendorId: po.vendor_id,
+          vendorName: po.vendor?.name || "",
+          status: po.status as PurchaseStatus,
+          lineItems: po.line_items.map((li: any) => ({
+            id: li.id,
+            productId: li.product_id,
+            productName: li.product?.name || "",
+            quantity: li.quantity,
+            unitPrice: li.unit_price,
+            total: li.total,
+          })),
+          subtotal: po.subtotal,
+          tax: po.tax,
+          taxRate: po.tax_rate,
+          total: po.total,
+          amountPaid: po.amount_paid,
+          balance: po.balance,
+          notes: po.notes,
+          receivedDate: po.received_date,
+          paymentDate: po.payment_date,
+          createdAt: po.created_at,
+          createdBy: createdByName,
+        };
+      }) as PurchaseOrder[];
     },
   });
 
@@ -352,6 +358,34 @@ export function usePurchases() {
 
   const updatePurchase = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<PurchaseOrder> }) => {
+      // Get existing purchase order to handle status transitions
+      const { data: existingPO } = await supabase
+        .from("purchase_orders")
+        .select("status, total, amount_paid")
+        .eq("id", id)
+        .single();
+
+      const previousStatus = existingPO?.status || "draft";
+      const isTransitioningToPaid = data.status === "paid" && previousStatus !== "paid";
+      
+      let amountPaid = data.amountPaid !== undefined ? data.amountPaid : existingPO?.amount_paid || 0;
+      const total = data.total || existingPO?.total || 0;
+      
+      // Handle payment status transitions
+      if (isTransitioningToPaid) {
+        // If transitioning to paid without amountPaid specified, mark as fully paid
+        if (data.amountPaid === undefined) {
+          amountPaid = total;
+        }
+        data.paymentDate = data.paymentDate || new Date().toISOString();
+      } else if (data.status === "paid" && data.amountPaid === undefined) {
+        // Already paid, preserve existing payment
+        amountPaid = existingPO?.amount_paid || 0;
+      }
+      
+      // Calculate balance
+      const balance = Math.max(0, total - amountPaid);
+      
       const { error: poError } = await supabase
         .from("purchase_orders")
         .update({
@@ -363,11 +397,12 @@ export function usePurchases() {
           tax: data.tax,
           tax_rate: data.taxRate,
           total: data.total,
-          amount_paid: data.amountPaid,
-          balance: data.balance,
+          amount_paid: amountPaid,
+          balance: balance,
           notes: data.notes,
           received_date: data.receivedDate,
           payment_date: data.paymentDate,
+          updated_at: new Date().toISOString(),
         })
         .eq("id", id);
 
@@ -418,21 +453,68 @@ export function usePurchases() {
 
   const bulkUpdateStatus = useMutation({
     mutationFn: async ({ ids, status, updateData }: { ids: string[]; status: PurchaseStatus; updateData?: Partial<PurchaseOrder> }) => {
-      const updates: any = { status };
-      
-      if (updateData) {
-        if (updateData.receivedDate) updates.received_date = updateData.receivedDate;
-        if (updateData.paymentDate) updates.payment_date = updateData.paymentDate;
-        if (updateData.amountPaid !== undefined) updates.amount_paid = updateData.amountPaid;
-        if (updateData.balance !== undefined) updates.balance = updateData.balance;
+      // If status is "paid", update payment info properly
+      if (status === "paid") {
+        // Fetch orders to get their totals
+        const { data: orders, error: fetchError } = await supabase
+          .from("purchase_orders")
+          .select("id, total, amount_paid")
+          .in("id", ids);
+
+        if (fetchError) throw fetchError;
+
+        // Update each order with correct payment info
+        for (const order of orders || []) {
+          const updates: any = { 
+            status,
+            updated_at: new Date().toISOString(),
+          };
+          
+          // If updateData has amountPaid, use it for partial payment
+          // Otherwise, mark as fully paid
+          if (updateData?.amountPaid !== undefined) {
+            updates.amount_paid = updateData.amountPaid;
+            updates.balance = order.total - updateData.amountPaid;
+            if (updateData.amountPaid > 0) {
+              updates.payment_date = updateData.paymentDate || new Date().toISOString();
+            }
+          } else {
+            // Full payment
+            updates.amount_paid = order.total;
+            updates.balance = 0;
+            updates.payment_date = updateData?.paymentDate || new Date().toISOString();
+          }
+
+          const { error } = await supabase
+            .from("purchase_orders")
+            .update(updates)
+            .eq("id", order.id);
+
+          if (error) throw error;
+        }
+      } else {
+        // For other statuses, just update status and optional fields
+        const updates: any = { status, updated_at: new Date().toISOString() };
+        
+        if (updateData) {
+          if (updateData.receivedDate) updates.received_date = updateData.receivedDate;
+          if (updateData.paymentDate) updates.payment_date = updateData.paymentDate;
+          // Only update amountPaid and balance if explicitly provided
+          if (updateData.amountPaid !== undefined) {
+            updates.amount_paid = updateData.amountPaid;
+          }
+          if (updateData.balance !== undefined) {
+            updates.balance = updateData.balance;
+          }
+        }
+
+        const { error } = await supabase
+          .from("purchase_orders")
+          .update(updates)
+          .in("id", ids);
+
+        if (error) throw error;
       }
-
-      const { error } = await supabase
-        .from("purchase_orders")
-        .update(updates)
-        .in("id", ids);
-
-      if (error) throw error;
     },
     onSuccess: (_, { ids }) => {
       queryClient.invalidateQueries({ queryKey: ["purchases"] });

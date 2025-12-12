@@ -157,7 +157,47 @@ export default function ChartOfAccounts() {
   };
 
   const handleExport = () => {
-    // Export functionality
+    // Flatten accounts to include parent code instead of parent ID
+    const accountsToExport = accounts.map(acc => {
+      const parentAccount = acc.parentId ? accounts.find(a => a.id === acc.parentId) : null;
+      return {
+        code: acc.code,
+        name: acc.name,
+        type: acc.type,
+        parentcode: parentAccount?.code || '',
+        description: acc.description || '',
+        balance: acc.balance || 0,
+        status: acc.status,
+      };
+    });
+
+    // Create CSV content
+    const headers = ['code', 'name', 'type', 'parentcode', 'description', 'balance', 'status'];
+    const csvRows = [
+      headers.join(','),
+      ...accountsToExport.map(acc => 
+        [
+          acc.code,
+          `"${acc.name}"`,
+          acc.type,
+          acc.parentcode,
+          `"${acc.description || ''}"`,
+          acc.balance,
+          acc.status,
+        ].join(',')
+      ),
+    ];
+
+    const csvContent = csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `accounts-export-${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (isLoading) {

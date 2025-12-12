@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Search, X, Calendar } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ActivityModule, ActivityActionType } from "@/types/activityLog";
+import { useUsers } from "@/hooks/useUsers";
 
 interface ActivityLogFiltersProps {
   onFilterChange: (filters: FilterState) => void;
@@ -24,6 +25,7 @@ export interface FilterState {
 }
 
 export function ActivityLogFilters({ onFilterChange }: ActivityLogFiltersProps) {
+  const { users } = useUsers();
   const [filters, setFilters] = useState<FilterState>({
     search: "",
     module: "all",
@@ -144,11 +146,11 @@ export function ActivityLogFilters({ onFilterChange }: ActivityLogFiltersProps) 
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Users</SelectItem>
-            <SelectItem value="user-1">John Doe</SelectItem>
-            <SelectItem value="user-2">Jane Smith</SelectItem>
-            <SelectItem value="user-3">Sarah Johnson</SelectItem>
-            <SelectItem value="user-4">Mike Chen</SelectItem>
-            <SelectItem value="user-5">Emily Brown</SelectItem>
+            {users.map((user) => (
+              <SelectItem key={user.id} value={user.id}>
+                {user.name || user.email}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

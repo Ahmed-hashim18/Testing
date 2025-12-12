@@ -72,7 +72,8 @@ export function useTransactions() {
           .select(`
             *,
             account_from_data:accounts!transactions_account_from_fkey(id, name, code),
-            account_to_data:accounts!transactions_account_to_fkey(id, name, code)
+            account_to_data:accounts!transactions_account_to_fkey(id, name, code),
+            creator:profiles!created_by(id, name, email)
           `)
           .order("date", { ascending: false });
         
@@ -83,7 +84,10 @@ export function useTransactions() {
         // Fallback to simple query without joins
         const result = await supabase
           .from("transactions")
-          .select("*")
+          .select(`
+            *,
+            creator:profiles!created_by(id, name, email)
+          `)
           .order("date", { ascending: false });
         
         data = result.data;
@@ -102,23 +106,28 @@ export function useTransactions() {
         return [];
       }
 
-      return data.map((t: any) => ({
-        id: t.id,
-        date: t.date,
-        type: t.type as TransactionType,
-        accountFrom: t.account_from_data?.name || "",
-        accountTo: t.account_to_data?.name || "",
-        accountFromId: t.account_from,
-        accountToId: t.account_to,
-        description: t.description,
-        amount: Number(t.amount) || 0,
-        reference: t.reference,
-        status: t.status,
-        notes: t.notes,
-        createdAt: t.created_at,
-        createdBy: t.created_by,
-        updatedAt: t.updated_at,
-      })) as Transaction[];
+      return data.map((t: any) => {
+        // Get creator name or fallback to ID
+        const createdByName = t.creator?.name || t.creator?.email || t.created_by || "System";
+        
+        return {
+          id: t.id,
+          date: t.date,
+          type: t.type as TransactionType,
+          accountFrom: t.account_from_data?.name || "",
+          accountTo: t.account_to_data?.name || "",
+          accountFromId: t.account_from,
+          accountToId: t.account_to,
+          description: t.description,
+          amount: Number(t.amount) || 0,
+          reference: t.reference,
+          status: t.status,
+          notes: t.notes,
+          createdAt: t.created_at,
+          createdBy: createdByName,
+          updatedAt: t.updated_at,
+        };
+      }) as Transaction[];
     },
     staleTime: 0,
     refetchOnWindowFocus: true,

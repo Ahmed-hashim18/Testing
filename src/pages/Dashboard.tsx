@@ -158,51 +158,6 @@ export default function Dashboard() {
         <LowStockAlerts />
       </div>
 
-      {/* Quick Actions */}
-      <div className="rounded-lg border bg-card p-6">
-        <h3 className="text-lg font-semibold mb-4">Quick Actions</h3>
-        <div className="grid gap-4 md:grid-cols-4">
-          <Button 
-            className="h-auto flex-col items-start p-4 text-left"
-            onClick={() => navigate("/sales")}
-          >
-            <span className="font-semibold">Record Sale</span>
-            <span className="text-xs opacity-90 mt-1">
-              Add new sales transaction
-            </span>
-          </Button>
-          <Button 
-            className="h-auto flex-col items-start p-4 text-left" 
-            variant="outline"
-            onClick={() => navigate("/purchases")}
-          >
-            <span className="font-semibold">Record Purchase</span>
-            <span className="text-xs text-muted-foreground mt-1">
-              Add new purchase transaction
-            </span>
-          </Button>
-          <Button 
-            className="h-auto flex-col items-start p-4 text-left" 
-            variant="outline"
-            onClick={() => navigate("/products")}
-          >
-            <span className="font-semibold">Manage Products</span>
-            <span className="text-xs text-muted-foreground mt-1">
-              Update inventory & pricing
-            </span>
-          </Button>
-          <Button 
-            className="h-auto flex-col items-start p-4 text-left" 
-            variant="outline"
-            onClick={() => navigate("/transactions")}
-          >
-            <span className="font-semibold">View Transactions</span>
-            <span className="text-xs text-muted-foreground mt-1">
-              Review financial records
-            </span>
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }
