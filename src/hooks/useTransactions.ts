@@ -143,6 +143,12 @@ export function useTransactions() {
         created_by: user.id,
       };
 
+      // Helper function to check if a string is a UUID
+      const isUUID = (str: string): boolean => {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        return uuidRegex.test(str);
+      };
+
       // Add account IDs if provided (for double-entry bookkeeping)
       // Both accounts are required for proper double-entry bookkeeping
       let accountFromId: string | null = null;
@@ -152,29 +158,49 @@ export function useTransactions() {
       if (transactionData.accountFromId) {
         accountFromId = transactionData.accountFromId;
       } else if (transactionData.accountFrom) {
-        // If account name is provided, try to resolve it to an ID
-        try {
+        // Check if accountFrom is already a UUID (ID), if so use it directly
+        if (isUUID(transactionData.accountFrom)) {
+          // Verify the account exists
           const { data: fromAccount, error: fromError } = await supabase
             .from("accounts")
             .select("id")
-            .eq("name", transactionData.accountFrom)
+            .eq("id", transactionData.accountFrom)
             .maybeSingle();
           
           if (fromError) {
-            throw new Error(`Failed to lookup account "${transactionData.accountFrom}": ${fromError.message}`);
+            throw new Error(`Failed to lookup account ID "${transactionData.accountFrom}": ${fromError.message}`);
           }
           
           if (!fromAccount) {
             throw new Error(`Account "${transactionData.accountFrom}" not found`);
           }
           
-          accountFromId = fromAccount.id;
-        } catch (error) {
-          // Re-throw with more context
-          if (error instanceof Error) {
-            throw error;
+          accountFromId = transactionData.accountFrom;
+        } else {
+          // If account name is provided, try to resolve it to an ID
+          try {
+            const { data: fromAccount, error: fromError } = await supabase
+              .from("accounts")
+              .select("id")
+              .eq("name", transactionData.accountFrom)
+              .maybeSingle();
+            
+            if (fromError) {
+              throw new Error(`Failed to lookup account "${transactionData.accountFrom}": ${fromError.message}`);
+            }
+            
+            if (!fromAccount) {
+              throw new Error(`Account "${transactionData.accountFrom}" not found`);
+            }
+            
+            accountFromId = fromAccount.id;
+          } catch (error) {
+            // Re-throw with more context
+            if (error instanceof Error) {
+              throw error;
+            }
+            throw new Error(`Failed to resolve account "${transactionData.accountFrom}"`);
           }
-          throw new Error(`Failed to resolve account "${transactionData.accountFrom}"`);
         }
       }
 
@@ -182,29 +208,49 @@ export function useTransactions() {
       if (transactionData.accountToId) {
         accountToId = transactionData.accountToId;
       } else if (transactionData.accountTo) {
-        // If account name is provided, try to resolve it to an ID
-        try {
+        // Check if accountTo is already a UUID (ID), if so use it directly
+        if (isUUID(transactionData.accountTo)) {
+          // Verify the account exists
           const { data: toAccount, error: toError } = await supabase
             .from("accounts")
             .select("id")
-            .eq("name", transactionData.accountTo)
+            .eq("id", transactionData.accountTo)
             .maybeSingle();
           
           if (toError) {
-            throw new Error(`Failed to lookup account "${transactionData.accountTo}": ${toError.message}`);
+            throw new Error(`Failed to lookup account ID "${transactionData.accountTo}": ${toError.message}`);
           }
           
           if (!toAccount) {
             throw new Error(`Account "${transactionData.accountTo}" not found`);
           }
           
-          accountToId = toAccount.id;
-        } catch (error) {
-          // Re-throw with more context
-          if (error instanceof Error) {
-            throw error;
+          accountToId = transactionData.accountTo;
+        } else {
+          // If account name is provided, try to resolve it to an ID
+          try {
+            const { data: toAccount, error: toError } = await supabase
+              .from("accounts")
+              .select("id")
+              .eq("name", transactionData.accountTo)
+              .maybeSingle();
+            
+            if (toError) {
+              throw new Error(`Failed to lookup account "${transactionData.accountTo}": ${toError.message}`);
+            }
+            
+            if (!toAccount) {
+              throw new Error(`Account "${transactionData.accountTo}" not found`);
+            }
+            
+            accountToId = toAccount.id;
+          } catch (error) {
+            // Re-throw with more context
+            if (error instanceof Error) {
+              throw error;
+            }
+            throw new Error(`Failed to resolve account "${transactionData.accountTo}"`);
           }
-          throw new Error(`Failed to resolve account "${transactionData.accountTo}"`);
         }
       }
 
