@@ -6,8 +6,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Transaction, TransactionStatus, TransactionType } from "@/types/transaction";
 import { Account } from "@/types/account";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { HierarchicalAccountSelect } from "@/components/accounts/HierarchicalAccountSelect";
 
 interface TransactionFormDialogProps {
   transaction: Transaction | null;
@@ -25,7 +26,7 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
     description: "",
     accountFrom: "",
     accountTo: "",
-    amount: 0,
+    amount: undefined,
     status: "pending",
     reference: "",
     notes: "",
@@ -41,7 +42,7 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
         description: "",
         accountFrom: "",
         accountTo: "",
-        amount: 0,
+        amount: undefined,
         status: "pending",
         reference: "",
         notes: "",
@@ -49,8 +50,30 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
     }
   }, [transaction, open]);
 
-  // Filter active accounts only
-  const activeAccounts = accounts.filter(acc => acc.status === "active");
+  // Filter active accounts and find leaf accounts (accounts without children)
+  const { activeAccounts, leafAccountIds } = useMemo(() => {
+    const active = accounts.filter(acc => acc.status === "active");
+    
+    // Build children map to find parent accounts
+    const childrenMap = new Map<string, Account[]>();
+    active.forEach(acc => {
+      if (acc.parentId) {
+        if (!childrenMap.has(acc.parentId)) {
+          childrenMap.set(acc.parentId, []);
+        }
+        childrenMap.get(acc.parentId)!.push(acc);
+      }
+    });
+    
+    // Leaf accounts are those without children
+    const leafIds = new Set(
+      active
+        .filter(acc => !childrenMap.has(acc.id))
+        .map(acc => acc.id)
+    );
+    
+    return { activeAccounts: active, leafAccountIds: leafIds };
+  }, [accounts]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,6 +91,25 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
       toast({
         title: "Validation Error",
         description: "Please select both From and To accounts.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    // Validate that selected accounts are leaf accounts (not parents)
+    if (!leafAccountIds.has(formData.accountFrom)) {
+      toast({
+        title: "Validation Error",
+        description: "From Account must be a leaf account (not a parent account).",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    if (!leafAccountIds.has(formData.accountTo)) {
+      toast({
+        title: "Validation Error",
+        description: "To Account must be a leaf account (not a parent account).",
         variant: "destructive",
       });
       return;
@@ -111,10 +153,7 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
                   <SelectItem value="sale">Sale</SelectItem>
                   <SelectItem value="purchase">Purchase</SelectItem>
                   <SelectItem value="payment">Payment</SelectItem>
-                  <SelectItem value="receipt">Receipt</SelectItem>
                   <SelectItem value="expense">Expense</SelectItem>
-                  <SelectItem value="refund">Refund</SelectItem>
-                  <SelectItem value="adjustment">Adjustment</SelectItem>
                   <SelectItem value="transfer">Transfer</SelectItem>
                 </SelectContent>
               </Select>
@@ -135,40 +174,24 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label htmlFor="accountFrom">From Account *</Label>
-              <Select 
-                value={formData.accountFrom} 
+              <HierarchicalAccountSelect
+                accounts={accounts}
+                value={formData.accountFrom || ""}
                 onValueChange={(value) => setFormData({ ...formData, accountFrom: value })}
-              >
-                <SelectTrigger id="accountFrom">
-                  <SelectValue placeholder="Select source account" />
-                </SelectTrigger>
-                <SelectContent>
-                  {activeAccounts.map((account) => (
-                    <SelectItem key={account.id} value={account.id}>
-                      {account.code} - {account.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="Select source account"
+                id="accountFrom"
+              />
             </div>
 
             <div>
               <Label htmlFor="accountTo">To Account *</Label>
-              <Select 
-                value={formData.accountTo} 
+              <HierarchicalAccountSelect
+                accounts={accounts}
+                value={formData.accountTo || ""}
                 onValueChange={(value) => setFormData({ ...formData, accountTo: value })}
-              >
-                <SelectTrigger id="accountTo">
-                  <SelectValue placeholder="Select destination account" />
-                </SelectTrigger>
-                <SelectContent>
-                  {activeAccounts.map((account) => (
-                    <SelectItem key={account.id} value={account.id}>
-                      {account.code} - {account.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="Select destination account"
+                id="accountTo"
+              />
             </div>
           </div>
 
@@ -180,9 +203,15 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
                 type="number"
                 step="0.01"
                 min="0"
-                value={formData.amount}
-                onChange={(e) => setFormData({ ...formData, amount: parseFloat(e.target.value) || 0 })}
-                placeholder="0.00"
+                value={formData.amount ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFormData({ 
+                    ...formData, 
+                    amount: val === "" ? undefined : parseFloat(val) || undefined 
+                  });
+                }}
+                placeholder="Enter amount"
                 required
               />
             </div>

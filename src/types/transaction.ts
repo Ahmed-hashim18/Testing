@@ -4,10 +4,7 @@ export type TransactionType =
   | "sale" 
   | "purchase" 
   | "payment" 
-  | "receipt" 
   | "expense" 
-  | "refund" 
-  | "adjustment"
   | "transfer";
 
 export interface Transaction {

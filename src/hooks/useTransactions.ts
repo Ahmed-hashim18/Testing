@@ -184,6 +184,21 @@ export function useTransactions() {
             throw new Error(`Account "${transactionData.accountFrom}" not found`);
           }
           
+          // Check if this account is a parent (has children) - if so, reject
+          const { data: children, error: childrenError } = await supabase
+            .from("accounts")
+            .select("id")
+            .eq("parent_id", fromAccount.id)
+            .limit(1);
+          
+          if (childrenError) {
+            console.warn("Error checking for child accounts:", childrenError);
+          }
+          
+          if (children && children.length > 0) {
+            throw new Error(`Account "${transactionData.accountFrom}" is a parent account and cannot be used in transactions. Please select a leaf account.`);
+          }
+          
           accountFromId = transactionData.accountFrom;
         } else {
           // If account name is provided, try to resolve it to an ID
@@ -198,11 +213,26 @@ export function useTransactions() {
               throw new Error(`Failed to lookup account "${transactionData.accountFrom}": ${fromError.message}`);
             }
             
-            if (!fromAccount) {
-              throw new Error(`Account "${transactionData.accountFrom}" not found`);
-            }
-            
-            accountFromId = fromAccount.id;
+          if (!fromAccount) {
+            throw new Error(`Account "${transactionData.accountFrom}" not found`);
+          }
+          
+          // Check if this account is a parent (has children) - if so, reject
+          const { data: children, error: childrenError } = await supabase
+            .from("accounts")
+            .select("id")
+            .eq("parent_id", fromAccount.id)
+            .limit(1);
+          
+          if (childrenError) {
+            console.warn("Error checking for child accounts:", childrenError);
+          }
+          
+          if (children && children.length > 0) {
+            throw new Error(`Account "${transactionData.accountFrom}" is a parent account and cannot be used in transactions. Please select a leaf account.`);
+          }
+          
+          accountFromId = fromAccount.id;
           } catch (error) {
             // Re-throw with more context
             if (error instanceof Error) {
@@ -219,7 +249,7 @@ export function useTransactions() {
       } else if (transactionData.accountTo) {
         // Check if accountTo is already a UUID (ID), if so use it directly
         if (isUUID(transactionData.accountTo)) {
-          // Verify the account exists
+          // Verify the account exists and is a leaf account (not a parent)
           const { data: toAccount, error: toError } = await supabase
             .from("accounts")
             .select("id")
@@ -232,6 +262,21 @@ export function useTransactions() {
           
           if (!toAccount) {
             throw new Error(`Account "${transactionData.accountTo}" not found`);
+          }
+          
+          // Check if this account is a parent (has children) - if so, reject
+          const { data: children, error: childrenError } = await supabase
+            .from("accounts")
+            .select("id")
+            .eq("parent_id", toAccount.id)
+            .limit(1);
+          
+          if (childrenError) {
+            console.warn("Error checking for child accounts:", childrenError);
+          }
+          
+          if (children && children.length > 0) {
+            throw new Error(`Account "${transactionData.accountTo}" is a parent account and cannot be used in transactions. Please select a leaf account.`);
           }
           
           accountToId = transactionData.accountTo;

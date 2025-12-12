@@ -3,7 +3,7 @@ import { z } from "zod";
 export const transactionSchema = z.object({
   id: z.string().optional(),
   date: z.string().min(1, "Date is required"),
-  type: z.enum(["sale", "purchase", "payment", "receipt", "expense", "refund", "adjustment", "transfer"], {
+  type: z.enum(["sale", "purchase", "payment", "expense", "transfer"], {
     errorMap: () => ({ message: "Please select a valid transaction type" }),
   }),
   description: z.string().min(3, "Description must be at least 3 characters").max(500, "Description must not exceed 500 characters"),
