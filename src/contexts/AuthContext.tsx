@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Session } from '@supabase/supabase-js';
 import { User } from '@/types/user';
@@ -34,6 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<Role | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const fetchingUserIdRef = useRef<string | null>(null);
 
   // Create basic user from session data
   const createBasicUser = (authUser: { id: string; email?: string }): User => ({
@@ -47,87 +48,79 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const fetchUserProfile = async (userId: string, userEmail?: string): Promise<void> => {
     try {
-      // Create basic user immediately so app is usable even if profile fetch fails
+      // Set basic user immediately so app is usable right away
       const basicUser = createBasicUser({ id: userId, email: userEmail });
+      setUser(basicUser);
       
-      // Try to fetch profile - with better error handling
-      let profile = null;
-      let userRole = null;
-      
+      // Fetch profile and role in parallel with timeout for faster loading
       try {
-        const profileResult = await supabase
-          .from('profiles')
-          .select('id, name, email, status, avatar_url, created_at')
-          .eq('id', userId)
-          .maybeSingle();
-        
-        if (profileResult.error) {
-          console.warn('Profile fetch error:', profileResult.error.message);
-        } else {
-          profile = profileResult.data;
-        }
-      } catch (e) {
-        console.warn('Profile fetch failed:', e);
-      }
-      
-      try {
-        const roleResult = await supabase
-          .from('user_roles')
-          .select('role')
-          .eq('user_id', userId)
-          .maybeSingle();
-        
-        if (roleResult.error) {
-          console.warn('Role fetch error:', roleResult.error.message);
-        } else {
-          userRole = roleResult.data;
-        }
-      } catch (e) {
-        console.warn('Role fetch failed:', e);
-      }
+        const [profileResult, roleResult] = await Promise.all([
+          withTimeout(
+            supabase
+              .from('profiles')
+              .select('id, name, email, status, avatar_url, created_at')
+              .eq('id', userId)
+              .maybeSingle(),
+            FAST_TIMEOUT
+          ),
+          withTimeout(
+            supabase
+              .from('user_roles')
+              .select('role')
+              .eq('user_id', userId)
+              .maybeSingle(),
+            FAST_TIMEOUT
+          )
+        ]);
 
-      // Build user from available data
-      // SECURITY: Default to 'viewer' (least privilege) if role fetch fails
-      const userData: User = {
-        id: userId,
-        name: profile?.name || userEmail?.split('@')[0] || 'User',
-        email: profile?.email || userEmail || '',
-        role: userRole?.role || 'viewer',
-        status: profile?.status || 'active',
-        avatar: profile?.avatar_url || undefined,
-        createdAt: profile?.created_at || new Date().toISOString(),
-      };
-      
-      console.log('User profile loaded:', userData);
-      setUser(userData);
+        const profile = profileResult.error ? null : profileResult.data;
+        const userRole = roleResult.error ? null : roleResult.data;
 
-      // Fetch role details in background (non-blocking, skip if fails)
-      if (userRole?.role) {
-        supabase
-          .from('roles')
-          .select('*')
-          .eq('role_type', userRole.role)
-          .maybeSingle()
-          .then(({ data: roleData }) => {
-            if (roleData) {
-              setRole({
-                id: roleData.id,
-                name: roleData.name,
-                roleType: roleData.role_type,
-                description: roleData.description || '',
-                permissions: [],
-                userCount: 0,
-                isSystemRole: roleData.is_system_role || false,
-                createdAt: roleData.created_at,
-              });
-            }
-          })
-          .catch(() => {}); // Ignore errors for non-critical data
+        // Build user from available data
+        // SECURITY: Default to 'viewer' (least privilege) if role fetch fails
+        const userData: User = {
+          id: userId,
+          name: profile?.name || userEmail?.split('@')[0] || 'User',
+          email: profile?.email || userEmail || '',
+          role: userRole?.role || 'viewer',
+          status: profile?.status || 'active',
+          avatar: profile?.avatar_url || undefined,
+          createdAt: profile?.created_at || new Date().toISOString(),
+        };
+        
+        console.log('User profile loaded:', userData);
+        setUser(userData);
+
+        // Fetch role details in background (non-blocking, skip if fails)
+        if (userRole?.role) {
+          supabase
+            .from('roles')
+            .select('*')
+            .eq('role_type', userRole.role)
+            .maybeSingle()
+            .then(({ data: roleData }) => {
+              if (roleData) {
+                setRole({
+                  id: roleData.id,
+                  name: roleData.name,
+                  roleType: roleData.role_type,
+                  description: roleData.description || '',
+                  permissions: [],
+                  userCount: 0,
+                  isSystemRole: roleData.is_system_role || false,
+                  createdAt: roleData.created_at,
+                });
+              }
+            })
+            .catch(() => {}); // Ignore errors for non-critical data
+        }
+      } catch (fetchError) {
+        console.warn('Profile fetch timed out or failed, using basic user:', fetchError);
+        // Basic user already set above, just log the warning
       }
     } catch (error) {
       console.error('Error in fetchUserProfile:', error);
-      // Still set a basic user so the app works
-      setUser(createBasicUser({ id: userId, email: userEmail }));
+      // Basic user already set above as fallback
     }
   };
 
@@ -215,20 +208,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (event === 'SIGNED_OUT') {
           setUser(null);
           setRole(null);
+          fetchingUserIdRef.current = null;
         } else if (newSession?.user && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
-          // Update last login timestamp on sign in
-          if (event === 'SIGNED_IN') {
-            try {
-              await supabase
+          // Only fetch profile if we're not already fetching for this user (prevent duplicate fetches)
+          const userId = newSession.user.id;
+          if (fetchingUserIdRef.current !== userId) {
+            fetchingUserIdRef.current = userId;
+            
+            // Update last login timestamp on sign in (non-blocking)
+            if (event === 'SIGNED_IN') {
+              supabase
                 .from('profiles')
                 .update({ last_login: new Date().toISOString() })
-                .eq('id', newSession.user.id);
-            } catch (error) {
-              // Don't block if this fails
-              console.warn('Failed to update last_login:', error);
+                .eq('id', userId)
+                .catch((error) => {
+                  // Don't block if this fails
+                  console.warn('Failed to update last_login:', error);
+                });
             }
+            
+            // Fetch profile (non-blocking)
+            fetchUserProfile(userId, newSession.user.email)
+              .finally(() => {
+                if (mounted && fetchingUserIdRef.current === userId) {
+                  fetchingUserIdRef.current = null;
+                }
+              });
           }
-          await fetchUserProfile(newSession.user.id, newSession.user.email);
         }
       }
     );
@@ -262,22 +268,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.user) {
         setSession(data.session);
         
-        // Fetch user profile immediately and wait for it to complete
-        // This ensures admin permissions are available right away
-        try {
-          await fetchUserProfile(data.user.id, data.user.email);
-        } catch (error) {
-          console.warn('Failed to fetch user profile during login, using basic user:', error);
-          // Fallback to basic user if profile fetch fails
-          const basicUser: User = {
-            id: data.user.id,
-            name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'User',
-            email: data.user.email || '',
-            role: 'viewer', // Default to least privilege if fetch fails
-            status: 'active',
-            createdAt: new Date().toISOString(),
-          };
-          setUser(basicUser);
+        // Set basic user immediately so login doesn't block
+        const basicUser: User = {
+          id: data.user.id,
+          name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'User',
+          email: data.user.email || '',
+          role: 'viewer', // Will be updated when profile loads
+          status: 'active',
+          createdAt: new Date().toISOString(),
+        };
+        setUser(basicUser);
+        
+        // Fetch full profile in background (non-blocking)
+        // The onAuthStateChange listener will also trigger, but we use ref to prevent duplicates
+        if (fetchingUserIdRef.current !== data.user.id) {
+          fetchingUserIdRef.current = data.user.id;
+          fetchUserProfile(data.user.id, data.user.email)
+            .finally(() => {
+              if (fetchingUserIdRef.current === data.user.id) {
+                fetchingUserIdRef.current = null;
+              }
+            });
         }
       }
 
