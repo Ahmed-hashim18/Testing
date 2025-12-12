@@ -215,9 +215,12 @@ export default function ActivityLog() {
                 <Input
                   id="days"
                   type="number"
-                  min="1"
+                  min="0"
                   value={resetDays}
-                  onChange={(e) => setResetDays(parseInt(e.target.value) || 30)}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10);
+                    setResetDays(Number.isNaN(value) ? 30 : value);
+                  }}
                   placeholder="30"
                 />
               </div>
