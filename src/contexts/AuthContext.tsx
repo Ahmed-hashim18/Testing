@@ -218,11 +218,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } else if (newSession?.user && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
           // Update last login timestamp on sign in
           if (event === 'SIGNED_IN') {
-            await supabase
-              .from('profiles')
-              .update({ last_login: new Date().toISOString() })
-              .eq('id', newSession.user.id)
-              .catch(() => {}); // Don't block if this fails
+            try {
+              await supabase
+                .from('profiles')
+                .update({ last_login: new Date().toISOString() })
+                .eq('id', newSession.user.id);
+            } catch (error) {
+              // Don't block if this fails
+              console.warn('Failed to update last_login:', error);
+            }
           }
           await fetchUserProfile(newSession.user.id, newSession.user.email);
         }
