@@ -1,8 +1,21 @@
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Account, AccountType } from "@/types/account";
 import { useMemo, useState } from "react";
-import { Plus, Minus } from "lucide-react";
+import { Plus, Minus, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 interface HierarchicalAccountSelectProps {
   accounts: Account[];
@@ -28,17 +41,21 @@ export function HierarchicalAccountSelect({
   placeholder = "Select account",
   id,
 }: HierarchicalAccountSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   // Track which parent accounts are expanded
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   
   // Build hierarchy and find leaf accounts (accounts without children)
-  const { hierarchicalAccounts, leafAccounts, childrenMap } = useMemo(() => {
+  const { hierarchicalAccounts, leafAccounts, childrenMap, accountMap } = useMemo(() => {
     const activeAccounts = accounts.filter(acc => acc.status === "active");
     
-    // Build parent-child relationships
+    // Build parent-child relationships and account map
     const childMap = new Map<string, Account[]>();
+    const accMap = new Map<string, Account>();
     
     activeAccounts.forEach(acc => {
+      accMap.set(acc.id, acc);
       if (acc.parentId) {
         if (!childMap.has(acc.parentId)) {
           childMap.set(acc.parentId, []);
@@ -79,8 +96,69 @@ export function HierarchicalAccountSelect({
       hierarchicalAccounts: byType,
       leafAccounts: leaf,
       childrenMap: childMap,
+      accountMap: accMap,
     };
   }, [accounts]);
+  
+  // Filter accounts based on search query and determine which parents to auto-expand
+  const { filteredHierarchicalAccounts, autoExpandedIds } = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return {
+        filteredHierarchicalAccounts: hierarchicalAccounts,
+        autoExpandedIds: new Set<string>(),
+      };
+    }
+    
+    const query = searchQuery.toLowerCase().trim();
+    const matchingAccountIds = new Set<string>();
+    const parentsToExpand = new Set<string>();
+    
+    // Find all accounts that match the search (by code or name)
+    accountMap.forEach((account) => {
+      const matchesCode = account.code.toLowerCase().includes(query);
+      const matchesName = account.name.toLowerCase().includes(query);
+      
+      if (matchesCode || matchesName) {
+        matchingAccountIds.add(account.id);
+        
+        // Add all parents to the expand set
+        let currentId: string | null = account.parentId;
+        while (currentId) {
+          parentsToExpand.add(currentId);
+          const parent = accountMap.get(currentId);
+          currentId = parent?.parentId || null;
+        }
+      }
+    });
+    
+    // Filter hierarchy: only show accounts that match or have matching descendants
+    const hasMatchingDescendant = (accountId: string): boolean => {
+      if (matchingAccountIds.has(accountId)) return true;
+      const children = childrenMap.get(accountId) || [];
+      return children.some(child => hasMatchingDescendant(child.id));
+    };
+    
+    const filteredByType = new Map<AccountType, Array<{ account: Account; level: number }>>();
+    
+    hierarchicalAccounts.forEach((accountList, type) => {
+      const filtered = accountList.filter(({ account }) => hasMatchingDescendant(account.id));
+      if (filtered.length > 0) {
+        filteredByType.set(type, filtered);
+      }
+    });
+    
+    return {
+      filteredHierarchicalAccounts: filteredByType,
+      autoExpandedIds: parentsToExpand,
+    };
+  }, [searchQuery, hierarchicalAccounts, childrenMap, accountMap]);
+  
+  // Merge auto-expanded IDs with manually expanded ones
+  const effectiveExpandedIds = useMemo(() => {
+    const merged = new Set(expandedIds);
+    autoExpandedIds.forEach(id => merged.add(id));
+    return merged;
+  }, [expandedIds, autoExpandedIds]);
   
   // Get selected account name for display
   const selectedAccount = useMemo(() => {
@@ -111,23 +189,34 @@ export function HierarchicalAccountSelect({
   // Recursively render account tree
   const renderAccountTree = (account: Account, level: number): React.ReactNode => {
     const isLeaf = isLeafAccount(account.id);
-    const isExpanded = expandedIds.has(account.id);
+    const isExpanded = effectiveExpandedIds.has(account.id);
     const indent = level * 20;
     const children = childrenMap.get(account.id) || [];
     
     if (isLeaf) {
       // Leaf account - selectable
       return (
-        <SelectItem
+        <CommandItem
           key={account.id}
-          value={account.id}
+          value={`${account.code} ${account.name}`}
+          onSelect={() => {
+            onValueChange(account.id);
+            setOpen(false);
+            setSearchQuery("");
+          }}
           className="pl-4"
           style={{ paddingLeft: `${indent + 16}px` }}
         >
+          <Check
+            className={cn(
+              "mr-2 h-4 w-4",
+              value === account.id ? "opacity-100" : "opacity-0"
+            )}
+          />
           <span className={accountTypeColors[account.type]}>
             {account.code} - {account.name}
           </span>
-        </SelectItem>
+        </CommandItem>
       );
     } else {
       // Parent account - collapsible, not selectable
@@ -165,37 +254,54 @@ export function HierarchicalAccountSelect({
   };
   
   return (
-    <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger id={id}>
-        <SelectValue placeholder={placeholder}>
+    <Popover open={open} onOpenChange={(newOpen) => {
+      setOpen(newOpen);
+      if (!newOpen) {
+        setSearchQuery("");
+      }
+    }}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between"
+          id={id}
+        >
           {selectedAccount ? (
             <span className={accountTypeColors[selectedAccount.type]}>
               {selectedAccount.code} - {selectedAccount.name}
             </span>
           ) : (
-            placeholder
+            <span className="text-muted-foreground">{placeholder}</span>
           )}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent className="max-h-[400px] overflow-y-auto">
-        {Array.from(hierarchicalAccounts.entries())
-          .sort(([typeA], [typeB]) => {
-            const order: AccountType[] = ['Assets', 'Liabilities', 'Equity', 'Revenue', 'Expenses'];
-            return order.indexOf(typeA) - order.indexOf(typeB);
-          })
-          .map(([type, accountList]) => (
-            <div key={type}>
-              {/* Type Header - Not selectable */}
-              <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider sticky top-0 bg-background z-10 border-b">
-                {type}
-              </div>
-              
-              {/* Accounts in this type - render tree recursively */}
-              {accountList.map(({ account }) => renderAccountTree(account, 0))}
-            </div>
-          ))}
-      </SelectContent>
-    </Select>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput
+            placeholder="Search by code or name..."
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+          />
+          <CommandList className="max-h-[400px]">
+            <CommandEmpty>No account found.</CommandEmpty>
+            {Array.from(filteredHierarchicalAccounts.entries())
+              .sort(([typeA], [typeB]) => {
+                const order: AccountType[] = ['Assets', 'Liabilities', 'Equity', 'Revenue', 'Expenses'];
+                return order.indexOf(typeA) - order.indexOf(typeB);
+              })
+              .map(([type, accountList]) => (
+                <CommandGroup key={type} heading={type}>
+                  {/* Accounts in this type - render tree recursively */}
+                  {accountList.map(({ account }) => renderAccountTree(account, 0))}
+                </CommandGroup>
+              ))}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 

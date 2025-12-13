@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { Transaction, TransactionStatus, TransactionType } from "@/types/transaction";
 import { Account } from "@/types/account";
@@ -145,18 +145,20 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
 
             <div>
               <Label htmlFor="type">Type *</Label>
-              <Select value={formData.type} onValueChange={(value) => setFormData({ ...formData, type: value as TransactionType })}>
-                <SelectTrigger id="type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="sale">Sale</SelectItem>
-                  <SelectItem value="purchase">Purchase</SelectItem>
-                  <SelectItem value="payment">Payment</SelectItem>
-                  <SelectItem value="expense">Expense</SelectItem>
-                  <SelectItem value="transfer">Transfer</SelectItem>
-                </SelectContent>
-              </Select>
+              <Combobox
+                options={[
+                  { value: "sale", label: "Sale" },
+                  { value: "purchase", label: "Purchase" },
+                  { value: "payment", label: "Payment" },
+                  { value: "expense", label: "Expense" },
+                  { value: "transfer", label: "Transfer" },
+                ]}
+                value={formData.type}
+                onValueChange={(value) => setFormData({ ...formData, type: value as TransactionType })}
+                placeholder="Select transaction type"
+                searchPlaceholder="Search transaction type..."
+                emptyMessage="No transaction type found."
+              />
             </div>
           </div>
 
@@ -218,17 +220,19 @@ export function TransactionFormDialog({ transaction, open, onOpenChange, onSave,
 
             <div>
               <Label htmlFor="status">Status *</Label>
-              <Select value={formData.status} onValueChange={(value) => setFormData({ ...formData, status: value as TransactionStatus })}>
-                <SelectTrigger id="status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="posted">Posted</SelectItem>
-                  <SelectItem value="reconciled">Reconciled</SelectItem>
-                  <SelectItem value="void">Void</SelectItem>
-                </SelectContent>
-              </Select>
+              <Combobox
+                options={[
+                  { value: "pending", label: "Pending" },
+                  { value: "posted", label: "Posted" },
+                  { value: "reconciled", label: "Reconciled" },
+                  { value: "void", label: "Void" },
+                ]}
+                value={formData.status}
+                onValueChange={(value) => setFormData({ ...formData, status: value as TransactionStatus })}
+                placeholder="Select status"
+                searchPlaceholder="Search status..."
+                emptyMessage="No status found."
+              />
             </div>
           </div>
 
