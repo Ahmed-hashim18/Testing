@@ -14,21 +14,22 @@ export default function BackupRestore() {
   const [backupStatus, setBackupStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' });
 
   // Tables to backup/restore (in order of dependencies)
+  // Order matters: parent tables must be restored before child tables
   const tables = [
-    'accounts',
-    'customers',
-    'vendors',
-    'products',
-    'product_categories',
-    'sales_orders',
-    'sales_line_items',
-    'purchase_orders',
-    'purchase_line_items',
-    'transactions',
-    'stock_movements',
-    'employees',
-    'payroll',
-    'activity_logs',
+    'accounts',           // No dependencies
+    'customers',          // No dependencies (created_by removed)
+    'vendors',            // No dependencies (created_by removed)
+    'product_categories', // No dependencies (must come before products)
+    'products',           // Depends on: product_categories, vendors
+    'employees',          // No dependencies (department_id removed)
+    'sales_orders',      // Depends on: customers
+    'sales_line_items',  // Depends on: sales_orders, products
+    'purchase_orders',   // Depends on: vendors
+    'purchase_line_items', // Depends on: purchase_orders, products
+    'transactions',      // Depends on: accounts (but FKs removed)
+    'stock_movements',   // Depends on: products
+    'payroll',           // Depends on: employees
+    'activity_logs',     // No dependencies (user_id removed)
   ];
 
   const createBackup = async () => {
@@ -112,21 +113,33 @@ export default function BackupRestore() {
   };
 
   // Foreign key fields to remove for each table (these reference other tables that may not exist)
+  // Note: Some foreign keys are NOT NULL and cannot be removed - these tables will be skipped if dependencies don't exist
   const foreignKeyFields: Record<string, string[]> = {
     customers: ['created_by'],
     vendors: ['created_by'],
     products: ['created_by', 'supplier_id', 'category_id'],
     product_categories: ['created_by', 'parent_id'],
-    sales_orders: ['customer_id', 'created_by'],
-    sales_line_items: ['sale_id', 'product_id'],
-    purchase_orders: ['vendor_id', 'created_by'],
-    purchase_line_items: ['purchase_order_id', 'product_id'],
+    sales_orders: ['created_by'], // customer_id is NOT NULL, so we keep it but it may cause errors
+    sales_line_items: [], // sale_id and product_id are NOT NULL, cannot remove
+    purchase_orders: ['created_by'], // vendor_id is NOT NULL, so we keep it but it may cause errors
+    purchase_line_items: [], // purchase_order_id and product_id are NOT NULL, cannot remove
     transactions: ['created_by', 'account_from', 'account_to'],
-    stock_movements: ['product_id', 'created_by'],
+    stock_movements: ['created_by'], // product_id is NOT NULL, cannot remove
     employees: ['department_id', 'created_by'],
-    payroll: ['employee_id', 'created_by'],
+    payroll: ['created_by'], // employee_id is NOT NULL, cannot remove
     activity_logs: ['user_id'],
     accounts: ['parent_id', 'created_by'],
+  };
+
+  // Tables that have NOT NULL foreign keys that must reference existing records
+  // These tables should be restored after their dependencies
+  const tablesWithRequiredForeignKeys: Record<string, string[]> = {
+    stock_movements: ['product_id'],
+    sales_orders: ['customer_id'],
+    sales_line_items: ['sale_id', 'product_id'],
+    purchase_orders: ['vendor_id'],
+    purchase_line_items: ['purchase_order_id', 'product_id'],
+    payroll: ['employee_id'],
   };
 
   const handleRestore = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -167,7 +180,12 @@ export default function BackupRestore() {
       }
 
       let totalRestored = 0;
-      const errors: string[] = [];
+      const errors: Array<{ table: string; message: string; count?: number }> = [];
+      const idMappings: Record<string, Record<string, string>> = {}; // oldId -> newId mappings per table
+      const restoredCounts: Record<string, number> = {};
+
+      // First, clear existing data (optional - user should be warned)
+      // We'll use upsert for UNIQUE fields instead to avoid data loss
 
       // Restore data table by table
       for (const table of tables) {
@@ -178,61 +196,246 @@ export default function BackupRestore() {
         const tableData = backup.data[table];
         if (tableData.length === 0) continue;
 
+        restoredCounts[table] = 0;
+        idMappings[table] = {};
+
         try {
           const batchSize = 50; // Smaller batch size for reliability
+          let tableErrors = 0;
           
           for (let i = 0; i < tableData.length; i += batchSize) {
             const batch = tableData.slice(i, i + batchSize);
+            const successfulInserts: any[] = [];
             
-            // Clean the batch - remove foreign keys and timestamps
-            const cleanBatch = batch.map((record: any) => {
-              const { id, created_at, updated_at, ...rest } = record;
-              
-              // Remove foreign key fields for this table
-              const fkFields = foreignKeyFields[table] || [];
-              const cleanRecord: any = {};
-              
-              for (const [key, value] of Object.entries(rest)) {
-                // Skip foreign key fields
-                if (!fkFields.includes(key)) {
-                  cleanRecord[key] = value;
+            // Process records one by one to handle UNIQUE constraint violations
+            for (const record of batch) {
+              try {
+                const { id: oldId, created_at, updated_at, ...rest } = record;
+                
+                // Remove foreign key fields for this table
+                const fkFields = foreignKeyFields[table] || [];
+                const cleanRecord: any = {};
+                
+                // Map of optional foreign keys to their referenced tables (for ID mapping)
+                const optionalFkMapping: Record<string, string> = {
+                  'category_id': 'product_categories',
+                  'supplier_id': 'vendors',
+                  'parent_id': 'accounts',
+                  'account_from': 'accounts',
+                  'account_to': 'accounts',
+                };
+                
+                for (const [key, value] of Object.entries(rest)) {
+                  // Skip foreign key fields that we're removing
+                  if (fkFields.includes(key)) {
+                    continue;
+                  }
+                  
+                  // Map optional foreign keys to new IDs if they exist
+                  if (value && optionalFkMapping[key]) {
+                    const referencedTable = optionalFkMapping[key];
+                    if (idMappings[referencedTable] && idMappings[referencedTable][value as string]) {
+                      cleanRecord[key] = idMappings[referencedTable][value as string];
+                    } else {
+                      // FK doesn't exist, set to null
+                      cleanRecord[key] = null;
+                    }
+                  } else {
+                    cleanRecord[key] = value;
+                  }
                 }
+                
+                // Skip if record is empty after cleaning
+                if (Object.keys(cleanRecord).length === 0) {
+                  continue;
+                }
+
+                // Check for required foreign keys that must exist and map old IDs to new IDs
+                const requiredFks = tablesWithRequiredForeignKeys[table] || [];
+                let skipRecord = false;
+                for (const fkField of requiredFks) {
+                  if (cleanRecord[fkField]) {
+                    // The FK value in the backup is the old ID from the referenced table
+                    const oldFkId = cleanRecord[fkField];
+                    // Find which table this FK references
+                    let referencedTable = '';
+                    if (fkField === 'customer_id') referencedTable = 'customers';
+                    else if (fkField === 'vendor_id') referencedTable = 'vendors';
+                    else if (fkField === 'product_id') referencedTable = 'products';
+                    else if (fkField === 'sale_id') referencedTable = 'sales_orders';
+                    else if (fkField === 'purchase_order_id') referencedTable = 'purchase_orders';
+                    else if (fkField === 'employee_id') referencedTable = 'employees';
+                    
+                    if (referencedTable && idMappings[referencedTable] && idMappings[referencedTable][oldFkId]) {
+                      // Map the old FK ID to the new ID
+                      cleanRecord[fkField] = idMappings[referencedTable][oldFkId];
+                    } else if (referencedTable) {
+                      // Foreign key doesn't exist in restored data, skip this record
+                      skipRecord = true;
+                      break;
+                    }
+                  } else {
+                    // Required FK is missing/null, skip this record
+                    skipRecord = true;
+                    break;
+                  }
+                }
+
+                if (skipRecord) {
+                  tableErrors++;
+                  continue;
+                }
+
+                // Determine unique field for upsert
+                let uniqueField = '';
+                if (table === 'accounts' || table === 'customers' || table === 'vendors') {
+                  uniqueField = 'code';
+                } else if (table === 'products') {
+                  uniqueField = 'sku';
+                } else if (table === 'product_categories') {
+                  uniqueField = 'name';
+                } else if (table === 'sales_orders' || table === 'purchase_orders') {
+                  uniqueField = 'order_number';
+                } else if (table === 'employees') {
+                  uniqueField = 'employee_number';
+                }
+
+                let insertResult;
+                if (uniqueField && cleanRecord[uniqueField]) {
+                  // Use upsert for tables with UNIQUE constraints
+                  const { data: existing, error: findError } = await supabase
+                    .from(table)
+                    .select('id')
+                    .eq(uniqueField, cleanRecord[uniqueField])
+                    .maybeSingle(); // Use maybeSingle() instead of single() to avoid errors when not found
+
+                  if (existing && !findError) {
+                    // Update existing record
+                    const { error: updateError } = await supabase
+                      .from(table)
+                      .update(cleanRecord)
+                      .eq('id', existing.id);
+
+                    if (updateError) {
+                      tableErrors++;
+                      continue;
+                    }
+                    insertResult = { data: [{ id: existing.id }], error: null };
+                  } else {
+                    // Insert new record
+                    const { data: inserted, error: insertError } = await supabase
+                      .from(table)
+                      .insert(cleanRecord)
+                      .select('id');
+
+                    insertResult = { data: inserted, error: insertError };
+                  }
+                } else {
+                  // Regular insert for tables without unique constraints
+                  const { data: inserted, error: insertError } = await supabase
+                    .from(table)
+                    .insert(cleanRecord)
+                    .select('id');
+
+                  insertResult = { data: inserted, error: insertError };
+                }
+
+                if (insertResult.error) {
+                  // Check if it's a UNIQUE constraint violation
+                  if (insertResult.error.code === '23505' || insertResult.error.message.includes('duplicate') || insertResult.error.message.includes('unique')) {
+                    // Try to find and update existing record (fallback if upsert above didn't work)
+                    if (uniqueField && cleanRecord[uniqueField]) {
+                      const { data: existing, error: findError } = await supabase
+                        .from(table)
+                        .select('id')
+                        .eq(uniqueField, cleanRecord[uniqueField])
+                        .maybeSingle();
+
+                      if (existing && !findError) {
+                        const { error: updateError } = await supabase
+                          .from(table)
+                          .update(cleanRecord)
+                          .eq('id', existing.id);
+
+                        if (!updateError) {
+                          insertResult = { data: [{ id: existing.id }], error: null };
+                        } else {
+                          tableErrors++;
+                          continue;
+                        }
+                      } else {
+                        // Record doesn't exist but we got a unique violation - skip it
+                        tableErrors++;
+                        continue;
+                      }
+                    } else {
+                      tableErrors++;
+                      continue;
+                    }
+                  } else {
+                    // Other error types
+                    tableErrors++;
+                    continue;
+                  }
+                }
+
+                // Store ID mapping if we have old and new IDs
+                if (oldId && insertResult.data && insertResult.data.length > 0) {
+                  idMappings[table][oldId] = insertResult.data[0].id;
+                }
+
+                successfulInserts.push(cleanRecord);
+              } catch (recordError: any) {
+                tableErrors++;
+                console.error(`Error restoring record in ${table}:`, recordError);
               }
-              
-              return cleanRecord;
-            });
-
-            // Filter out empty records
-            const validBatch = cleanBatch.filter((r: any) => Object.keys(r).length > 0);
-            
-            if (validBatch.length === 0) continue;
-
-            // Insert without IDs (let database generate new ones)
-            const { error: insertError } = await supabase
-              .from(table)
-              .insert(validBatch);
-
-            if (insertError) {
-              console.error(`Error restoring ${table}:`, insertError);
-              errors.push(`${table}: ${insertError.message}`);
-            } else {
-              totalRestored += validBatch.length;
-              console.log(`Restored ${validBatch.length} records to ${table}`);
             }
+
+            if (tableErrors > 0 && successfulInserts.length === 0) {
+              // All records in batch failed
+              errors.push({
+                table,
+                message: `All ${batch.length} records failed to restore`,
+                count: batch.length
+              });
+            } else if (tableErrors > 0) {
+              errors.push({
+                table,
+                message: `${tableErrors} of ${batch.length} records failed to restore`,
+                count: tableErrors
+              });
+            }
+
+            restoredCounts[table] += successfulInserts.length;
+            totalRestored += successfulInserts.length;
+          }
+
+          if (restoredCounts[table] > 0) {
+            console.log(`Restored ${restoredCounts[table]} records to ${table}`);
           }
         } catch (error: any) {
-          errors.push(`${table}: ${error.message}`);
+          errors.push({
+            table,
+            message: error.message || 'Unknown error',
+          });
           console.error(`Error restoring ${table}:`, error);
         }
       }
 
       if (errors.length > 0) {
+        const errorSummary = errors.map(e => 
+          `${e.table}${e.count ? ` (${e.count} failed)` : ''}`
+        ).join(', ');
+        
+        const totalErrors = errors.reduce((sum, e) => sum + (e.count || 1), 0);
+        
         setBackupStatus({
           type: 'error',
-          message: `Restore completed with some errors. ${totalRestored} records restored. Some tables had issues: ${errors.length} errors.`,
+          message: `Restore completed with some errors. ${totalRestored} records restored. ${totalErrors} error(s) in ${errors.length} table(s): ${errorSummary}. Check console for details.`,
         });
-        toast.error(`Restore completed with some errors (${totalRestored} records)`);
+        toast.error(`Restore completed with some errors (${totalRestored} records restored, ${totalErrors} errors)`);
         console.error('Restore errors:', errors);
+        console.error('Restored counts per table:', restoredCounts);
       } else {
         setBackupStatus({
           type: 'success',
