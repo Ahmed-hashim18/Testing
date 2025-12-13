@@ -1,5 +1,5 @@
 import { Account, AccountType } from "@/types/account";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { Plus, Minus, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,41 @@ const accountTypeColors: Record<AccountType, string> = {
   'Expenses': 'text-orange-600 dark:text-orange-400',
 };
 
+// Helper function to highlight search text
+const highlightText = (text: string, query: string): React.ReactNode => {
+  if (!query.trim()) {
+    return text;
+  }
+
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase().trim();
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let index = lowerText.indexOf(lowerQuery, lastIndex);
+
+  while (index !== -1) {
+    // Add text before match
+    if (index > lastIndex) {
+      parts.push(text.substring(lastIndex, index));
+    }
+    // Add highlighted match
+    parts.push(
+      <mark key={index} className="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded">
+        {text.substring(index, index + query.length)}
+      </mark>
+    );
+    lastIndex = index + query.length;
+    index = lowerText.indexOf(lowerQuery, lastIndex);
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+
+  return parts.length > 0 ? <>{parts}</> : text;
+};
+
 export function HierarchicalAccountSelect({
   accounts,
   value,
@@ -43,9 +78,20 @@ export function HierarchicalAccountSelect({
 }: HierarchicalAccountSelectProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  // Track which parent accounts are expanded
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Track which parent account is expanded (only ONE at a time)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   
+  // Auto-focus search input when dropdown opens
+  useEffect(() => {
+    if (open && searchInputRef.current) {
+      // Small delay to ensure the input is rendered
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 100);
+    }
+  }, [open]);
+
   // Build hierarchy and find leaf accounts (accounts without children)
   const { hierarchicalAccounts, leafAccounts, childrenMap, accountMap } = useMemo(() => {
     const activeAccounts = accounts.filter(acc => acc.status === "active");
@@ -121,7 +167,7 @@ export function HierarchicalAccountSelect({
       if (matchesCode || matchesName) {
         matchingAccountIds.add(account.id);
         
-        // Add all parents to the expand set
+        // Add all parents to the expand set (auto-expand all parents containing matches)
         let currentId: string | null = account.parentId;
         while (currentId) {
           parentsToExpand.add(currentId);
@@ -153,12 +199,24 @@ export function HierarchicalAccountSelect({
     };
   }, [searchQuery, hierarchicalAccounts, childrenMap, accountMap]);
   
-  // Merge auto-expanded IDs with manually expanded ones
+  // Determine which parents should be expanded
+  // During search: auto-expand all parents containing matches
+  // When not searching: only allow one manually expanded parent (accordion behavior)
   const effectiveExpandedIds = useMemo(() => {
-    const merged = new Set(expandedIds);
-    autoExpandedIds.forEach(id => merged.add(id));
-    return merged;
-  }, [expandedIds, autoExpandedIds]);
+    if (searchQuery.trim()) {
+      // During search: return all auto-expanded parents
+      return autoExpandedIds;
+    }
+    // Normal accordion: only one parent expanded
+    return expandedId ? new Set([expandedId]) : new Set<string>();
+  }, [searchQuery, autoExpandedIds, expandedId]);
+
+  // Reset expanded state when search is cleared
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setExpandedId(null);
+    }
+  }, [searchQuery]);
   
   // Get selected account name for display
   const selectedAccount = useMemo(() => {
@@ -171,19 +229,28 @@ export function HierarchicalAccountSelect({
     return leafAccounts.some(acc => acc.id === accountId);
   };
   
-  // Toggle expansion state
+  // Toggle expansion state (accordion: only ONE parent expanded at a time)
   const toggleExpanded = (accountId: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setExpandedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(accountId)) {
-        next.delete(accountId);
-      } else {
-        next.add(accountId);
+    setExpandedId(prev => {
+      // If clicking the same parent, collapse it
+      if (prev === accountId) {
+        return null;
       }
-      return next;
+      // Otherwise, expand this one (collapsing the previous)
+      return accountId;
     });
+  };
+
+  // Handle ESC key to close dropdown only
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      setSearchQuery("");
+    }
   };
   
   // Recursively render account tree
@@ -194,7 +261,8 @@ export function HierarchicalAccountSelect({
     const children = childrenMap.get(account.id) || [];
     
     if (isLeaf) {
-      // Leaf account - selectable
+      // Leaf account - selectable, lighter weight
+      const displayText = `${account.code} - ${account.name}`;
       return (
         <CommandItem
           key={account.id}
@@ -203,28 +271,36 @@ export function HierarchicalAccountSelect({
             onValueChange(account.id);
             setOpen(false);
             setSearchQuery("");
+            setExpandedId(null);
           }}
-          className="pl-4"
+          className="py-1"
           style={{ paddingLeft: `${indent + 16}px` }}
         >
           <Check
             className={cn(
-              "mr-2 h-4 w-4",
+              "mr-2 h-4 w-4 shrink-0",
               value === account.id ? "opacity-100" : "opacity-0"
             )}
           />
-          <span className={accountTypeColors[account.type]}>
-            {account.code} - {account.name}
+          <span className={cn("font-normal", accountTypeColors[account.type])}>
+            {searchQuery.trim() ? (
+              <>
+                {highlightText(account.code, searchQuery)} - {highlightText(account.name, searchQuery)}
+              </>
+            ) : (
+              displayText
+            )}
           </span>
         </CommandItem>
       );
     } else {
-      // Parent account - collapsible, not selectable
+      // Parent account - collapsible, not selectable, slightly bolder
+      const displayText = `${account.code} - ${account.name}`;
       return (
         <div key={account.id}>
           <div
             className={cn(
-              "flex items-center gap-1 px-2 py-1.5 text-sm text-muted-foreground cursor-pointer hover:bg-muted/50 rounded-sm",
+              "flex items-center gap-1 px-2 py-1 text-sm text-muted-foreground cursor-pointer hover:bg-muted/50 rounded-sm",
               "select-none"
             )}
             style={{ paddingLeft: `${indent + 16}px` }}
@@ -232,12 +308,18 @@ export function HierarchicalAccountSelect({
           >
             <div className="flex items-center gap-1.5 flex-1">
               {isExpanded ? (
-                <Minus className="h-3.5 w-3.5" />
+                <Minus className="h-3.5 w-3.5 shrink-0" />
               ) : (
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-3.5 w-3.5 shrink-0" />
               )}
-              <span className={cn("opacity-80", accountTypeColors[account.type])}>
-                {account.code} - {account.name}
+              <span className={cn("font-semibold", accountTypeColors[account.type])}>
+                {searchQuery.trim() ? (
+                  <>
+                    {highlightText(account.code, searchQuery)} - {highlightText(account.name, searchQuery)}
+                  </>
+                ) : (
+                  displayText
+                )}
               </span>
             </div>
           </div>
@@ -254,12 +336,16 @@ export function HierarchicalAccountSelect({
   };
   
   return (
-    <Popover open={open} onOpenChange={(newOpen) => {
-      setOpen(newOpen);
-      if (!newOpen) {
-        setSearchQuery("");
-      }
-    }}>
+    <Popover 
+      open={open} 
+      onOpenChange={(newOpen) => {
+        setOpen(newOpen);
+        if (!newOpen) {
+          setSearchQuery("");
+          setExpandedId(null);
+        }
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           variant="outline"
@@ -278,14 +364,19 @@ export function HierarchicalAccountSelect({
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+      <PopoverContent 
+        className="w-[var(--radix-popover-trigger-width)] p-0" 
+        align="start"
+        onKeyDown={handleKeyDown}
+      >
         <Command shouldFilter={false}>
           <CommandInput
+            ref={searchInputRef}
             placeholder="Search by code or name..."
             value={searchQuery}
             onValueChange={setSearchQuery}
           />
-          <CommandList className="max-h-[400px]">
+          <CommandList className="max-h-[325px] overflow-y-auto">
             <CommandEmpty>No account found.</CommandEmpty>
             {Array.from(filteredHierarchicalAccounts.entries())
               .sort(([typeA], [typeB]) => {
@@ -304,4 +395,3 @@ export function HierarchicalAccountSelect({
     </Popover>
   );
 }
-
