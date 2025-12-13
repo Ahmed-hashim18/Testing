@@ -1,6 +1,8 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Account, AccountType } from "@/types/account";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { Plus, Minus } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface HierarchicalAccountSelectProps {
   accounts: Account[];
@@ -26,28 +28,29 @@ export function HierarchicalAccountSelect({
   placeholder = "Select account",
   id,
 }: HierarchicalAccountSelectProps) {
+  // Track which parent accounts are expanded
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  
   // Build hierarchy and find leaf accounts (accounts without children)
-  const { hierarchicalAccounts, leafAccounts } = useMemo(() => {
+  const { hierarchicalAccounts, leafAccounts, childrenMap } = useMemo(() => {
     const activeAccounts = accounts.filter(acc => acc.status === "active");
     
     // Build parent-child relationships
-    const accountMap = new Map<string, Account>();
-    const childrenMap = new Map<string, Account[]>();
+    const childMap = new Map<string, Account[]>();
     
     activeAccounts.forEach(acc => {
-      accountMap.set(acc.id, acc);
       if (acc.parentId) {
-        if (!childrenMap.has(acc.parentId)) {
-          childrenMap.set(acc.parentId, []);
+        if (!childMap.has(acc.parentId)) {
+          childMap.set(acc.parentId, []);
         }
-        childrenMap.get(acc.parentId)!.push(acc);
+        childMap.get(acc.parentId)!.push(acc);
       }
     });
     
     // Find leaf accounts (accounts without children)
-    const leafAccounts = activeAccounts.filter(acc => !childrenMap.has(acc.id));
+    const leaf = activeAccounts.filter(acc => !childMap.has(acc.id));
     
-    // Build hierarchical structure
+    // Build hierarchical structure by type
     const buildHierarchy = (parentId: string | null, level: number = 0): Array<{ account: Account; level: number }> => {
       const result: Array<{ account: Account; level: number }> = [];
       
@@ -56,9 +59,6 @@ export function HierarchicalAccountSelect({
         .sort((a, b) => a.code.localeCompare(b.code))
         .forEach(acc => {
           result.push({ account: acc, level });
-          // Recursively add children
-          const children = buildHierarchy(acc.id, level + 1);
-          result.push(...children);
         });
       
       return result;
@@ -77,7 +77,8 @@ export function HierarchicalAccountSelect({
     
     return {
       hierarchicalAccounts: byType,
-      leafAccounts,
+      leafAccounts: leaf,
+      childrenMap: childMap,
     };
   }, [accounts]);
   
@@ -90,6 +91,77 @@ export function HierarchicalAccountSelect({
   // Check if an account is a leaf (selectable)
   const isLeafAccount = (accountId: string): boolean => {
     return leafAccounts.some(acc => acc.id === accountId);
+  };
+  
+  // Toggle expansion state
+  const toggleExpanded = (accountId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(accountId)) {
+        next.delete(accountId);
+      } else {
+        next.add(accountId);
+      }
+      return next;
+    });
+  };
+  
+  // Recursively render account tree
+  const renderAccountTree = (account: Account, level: number): React.ReactNode => {
+    const isLeaf = isLeafAccount(account.id);
+    const isExpanded = expandedIds.has(account.id);
+    const indent = level * 20;
+    const children = childrenMap.get(account.id) || [];
+    
+    if (isLeaf) {
+      // Leaf account - selectable
+      return (
+        <SelectItem
+          key={account.id}
+          value={account.id}
+          className="pl-4"
+          style={{ paddingLeft: `${indent + 16}px` }}
+        >
+          <span className={accountTypeColors[account.type]}>
+            {account.code} - {account.name}
+          </span>
+        </SelectItem>
+      );
+    } else {
+      // Parent account - collapsible, not selectable
+      return (
+        <div key={account.id}>
+          <div
+            className={cn(
+              "flex items-center gap-1 px-2 py-1.5 text-sm text-muted-foreground cursor-pointer hover:bg-muted/50 rounded-sm",
+              "select-none"
+            )}
+            style={{ paddingLeft: `${indent + 16}px` }}
+            onClick={(e) => toggleExpanded(account.id, e)}
+          >
+            <div className="flex items-center gap-1.5 flex-1">
+              {isExpanded ? (
+                <Minus className="h-3.5 w-3.5" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
+              <span className={cn("opacity-80", accountTypeColors[account.type])}>
+                {account.code} - {account.name}
+              </span>
+            </div>
+          </div>
+          {isExpanded && children.length > 0 && (
+            <div>
+              {children
+                .sort((a, b) => a.code.localeCompare(b.code))
+                .map(child => renderAccountTree(child, level + 1))}
+            </div>
+          )}
+        </div>
+      );
+    }
   };
   
   return (
@@ -105,7 +177,7 @@ export function HierarchicalAccountSelect({
           )}
         </SelectValue>
       </SelectTrigger>
-      <SelectContent className="max-h-[300px]">
+      <SelectContent className="max-h-[400px] overflow-y-auto">
         {Array.from(hierarchicalAccounts.entries())
           .sort(([typeA], [typeB]) => {
             const order: AccountType[] = ['Assets', 'Liabilities', 'Equity', 'Revenue', 'Expenses'];
@@ -114,44 +186,12 @@ export function HierarchicalAccountSelect({
           .map(([type, accountList]) => (
             <div key={type}>
               {/* Type Header - Not selectable */}
-              <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider sticky top-0 bg-background z-10 border-b">
                 {type}
               </div>
               
-              {/* Accounts in this type */}
-              {accountList.map(({ account, level }) => {
-                const isLeaf = isLeafAccount(account.id);
-                const indent = level * 20;
-                
-                if (isLeaf) {
-                  // Leaf account - selectable
-                  return (
-                    <SelectItem
-                      key={account.id}
-                      value={account.id}
-                      className="pl-4"
-                      style={{ paddingLeft: `${indent + 16}px` }}
-                    >
-                      <span className={accountTypeColors[account.type]}>
-                        {account.code} - {account.name}
-                      </span>
-                    </SelectItem>
-                  );
-                } else {
-                  // Parent account - not selectable, just a label
-                  return (
-                    <div
-                      key={account.id}
-                      className="px-2 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
-                      style={{ paddingLeft: `${indent + 16}px` }}
-                    >
-                      <span className="opacity-60">
-                        └── {account.code} - {account.name}
-                      </span>
-                    </div>
-                  );
-                }
-              })}
+              {/* Accounts in this type - render tree recursively */}
+              {accountList.map(({ account }) => renderAccountTree(account, 0))}
             </div>
           ))}
       </SelectContent>
