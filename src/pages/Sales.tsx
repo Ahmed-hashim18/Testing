@@ -5,13 +5,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Eye, Pencil, FileText, Download, Users } from "lucide-react";
+import { Plus, Eye, Pencil, FileText, Download, Users, Upload } from "lucide-react";
 import { SalesFilters } from "@/components/sales/SalesFilters";
 import { SalesDetailDialog } from "@/components/sales/SalesDetailDialog";
 import { SalesFormDialog } from "@/components/sales/SalesFormDialog";
 import { SalesBulkActionsBar } from "@/components/sales/SalesBulkActionsBar";
 import { SalesAnalytics } from "@/components/sales/SalesAnalytics";
 import { CustomerFormDialog } from "@/components/sales/CustomerFormDialog";
+import { ImportSalesOrdersDialog } from "@/components/sales/ImportSalesOrdersDialog";
 import { CollapsibleFilters } from "@/components/common/CollapsibleFilters";
 import { SalesOrder, SalesFilters as SalesFiltersType } from "@/types/sale";
 import { useSales } from "@/hooks/useSales";
@@ -31,7 +32,7 @@ const statusColors = {
 };
 
 export default function Sales() {
-  const { sales, loading: salesLoading, createSalesOrder, updateSalesOrder, deleteSalesOrders, bulkUpdateStatus } = useSales();
+  const { sales, loading: salesLoading, createSalesOrder, updateSalesOrder, deleteSalesOrders, bulkUpdateStatus, bulkImportSalesOrders } = useSales();
   const { customers, loading: customersLoading, createCustomer, refetch: refetchCustomers } = useCustomers();
   const { products, loading: productsLoading } = useProducts();
   const [selectedSale, setSelectedSale] = useState<SalesOrder | null>(null);
@@ -39,6 +40,7 @@ export default function Sales() {
   const [showFormDialog, setShowFormDialog] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerDialog, setShowCustomerDialog] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<SalesFiltersType>({
     search: "",
@@ -219,6 +221,10 @@ export default function Sales() {
               <Download className="h-4 w-4 mr-2" />
               Export All
             </Button>
+            <Button variant="outline" onClick={() => setShowImportDialog(true)}>
+              <Upload className="h-4 w-4 mr-2" />
+              Import Sales Orders
+            </Button>
             <Button onClick={handleCreate}>
               <Plus className="h-4 w-4 mr-2" />
               New Order
@@ -386,6 +392,14 @@ export default function Sales() {
         open={showCustomerDialog}
         onOpenChange={setShowCustomerDialog}
         onSave={handleSaveCustomer}
+      />
+
+      <ImportSalesOrdersDialog
+        open={showImportDialog}
+        onOpenChange={setShowImportDialog}
+        onImport={bulkImportSalesOrders}
+        customers={customers}
+        products={products}
       />
     </div>
   );

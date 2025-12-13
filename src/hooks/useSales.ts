@@ -4,6 +4,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { SalesOrder, LineItem } from "@/types/sale";
 import { toast } from "sonner";
 import { useActivityLogs } from "./useActivityLog";
+import { salesOrderSchema } from "@/lib/validations/sale";
+import { z } from "zod";
 
 export function useSales() {
   const [sales, setSales] = useState<SalesOrder[]>([]);
@@ -529,6 +531,196 @@ export function useSales() {
     }
   };
 
+  const bulkImportSalesOrders = async (ordersData: Partial<SalesOrder>[]) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("User not authenticated");
+
+      // Validate all orders first
+      for (const orderData of ordersData) {
+        try {
+          salesOrderSchema.parse(orderData);
+        } catch (error) {
+          if (error instanceof z.ZodError) {
+            throw new Error(`Validation failed: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+          }
+          throw error;
+        }
+      }
+
+      // Import all orders in a transaction-like manner (using a loop to ensure all-or-nothing)
+      const importedOrders: any[] = [];
+      
+      for (const orderData of ordersData) {
+        // Insert sales order
+        const { data: salesOrder, error: orderError } = await supabase
+          .from("sales_orders")
+          .insert({
+            order_number: orderData.orderNumber,
+            customer_id: orderData.customerId,
+            order_date: orderData.date,
+            status: orderData.status || "draft",
+            subtotal: orderData.subtotal || 0,
+            discount_amount: orderData.discountAmount || 0,
+            tax_amount: orderData.taxAmount || 0,
+            total: orderData.total || 0,
+            paid_amount: orderData.paidAmount || 0,
+            balance: orderData.balance || orderData.total || 0,
+            notes: orderData.notes || null,
+            created_by: user.id,
+          })
+          .select()
+          .single();
+
+        if (orderError) throw orderError;
+        importedOrders.push(salesOrder);
+
+        // Update customer balance
+        if (orderData.customerId && orderData.balance && orderData.balance > 0) {
+          const { data: customer } = await supabase
+            .from("customers")
+            .select("balance")
+            .eq("id", orderData.customerId)
+            .single();
+
+          if (customer) {
+            await supabase
+              .from("customers")
+              .update({ balance: (customer.balance || 0) + orderData.balance })
+              .eq("id", orderData.customerId);
+          }
+        }
+
+        // Insert line items
+        if (orderData.lineItems && orderData.lineItems.length > 0) {
+          const lineItemsData = orderData.lineItems.map((item) => ({
+            sale_id: salesOrder.id,
+            product_id: item.productId,
+            quantity: item.quantity,
+            unit_price: item.unitPrice,
+            discount: item.discount,
+            tax: item.tax,
+            total: item.total,
+          }));
+
+          const { error: lineItemsError } = await supabase
+            .from("sales_line_items")
+            .insert(lineItemsData);
+
+          if (lineItemsError) throw lineItemsError;
+
+          // Update inventory
+          for (const item of orderData.lineItems) {
+            const { data: product, error: productError } = await supabase
+              .from("products")
+              .select("current_stock")
+              .eq("id", item.productId)
+              .single();
+
+            if (productError) {
+              console.error(`Error fetching product ${item.productId}:`, productError);
+              continue;
+            }
+
+            const newStock = Math.max(0, (product.current_stock || 0) - item.quantity);
+
+            await supabase
+              .from("products")
+              .update({ current_stock: newStock })
+              .eq("id", item.productId);
+
+            // Record stock movement
+            await supabase.from("stock_movements").insert({
+              product_id: item.productId,
+              movement_type: "out",
+              quantity: item.quantity,
+              reference_type: "sale",
+              reference_id: salesOrder.id,
+              notes: `Sale order ${orderData.orderNumber}`,
+              created_by: user.id,
+            });
+          }
+        }
+
+        // Create transaction for income (same logic as createSalesOrder)
+        if (orderData.total && orderData.total > 0) {
+          let cashAccountId: string | null = null;
+          const { data: cashAccounts } = await supabase
+            .from("accounts")
+            .select("id")
+            .eq("account_type", "asset")
+            .ilike("name", "%cash%")
+            .limit(1);
+
+          if (cashAccounts && cashAccounts.length > 0) {
+            cashAccountId = cashAccounts[0].id;
+          }
+
+          let revenueAccountId: string | null = null;
+          const { data: revenueAccounts } = await supabase
+            .from("accounts")
+            .select("id")
+            .eq("account_type", "revenue")
+            .ilike("name", "%sales%")
+            .limit(1);
+
+          if (revenueAccounts && revenueAccounts.length > 0) {
+            revenueAccountId = revenueAccounts[0].id;
+          }
+
+          if (cashAccountId && revenueAccountId) {
+            await supabase.from("transactions").insert({
+              date: orderData.date || new Date().toISOString().split("T")[0],
+              type: "sale",
+              description: `Sale order ${orderData.orderNumber} - ${orderData.customerName || "customer"}`,
+              account_from: cashAccountId,
+              account_to: revenueAccountId,
+              amount: orderData.total,
+              status: "posted",
+              reference: orderData.orderNumber,
+              notes: `Sale to ${orderData.customerName || "customer"}`,
+              created_by: user.id,
+            });
+          }
+        }
+      }
+
+      // Create activity log
+      try {
+        await createActivityLog({
+          module: "sales",
+          actionType: "import",
+          description: `Imported ${importedOrders.length} sales order(s) from CSV`,
+          entityType: "sales_order",
+          metadata: {
+            count: importedOrders.length,
+            orderIds: importedOrders.map(o => o.id),
+          },
+        });
+      } catch (logError) {
+        console.error("Error creating activity log:", logError);
+      }
+
+      // Invalidate and refetch queries
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+        queryClient.invalidateQueries({ queryKey: ["accounts"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["customers"] }),
+        queryClient.invalidateQueries({ queryKey: ["activityLogs"] }),
+      ]);
+
+      toast.success(`${importedOrders.length} sales order(s) imported successfully`);
+      await fetchSales();
+      return importedOrders;
+    } catch (error: any) {
+      console.error("Error importing sales orders:", error);
+      toast.error(error.message || "Failed to import sales orders");
+      throw error;
+    }
+  };
+
   return {
     sales,
     loading,
@@ -536,6 +728,7 @@ export function useSales() {
     updateSalesOrder,
     deleteSalesOrders,
     bulkUpdateStatus,
+    bulkImportSalesOrders,
     refetch: fetchSales,
   };
 }

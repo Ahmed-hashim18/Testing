@@ -4,6 +4,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { Transaction, TransactionType } from "@/types/transaction";
 import { toast } from "@/lib/toast";
 import { useActivityLogs } from "@/hooks/useActivityLog";
+import { transactionSchema } from "@/lib/validations/transaction";
+import { z } from "zod";
 
 export function useTransactions() {
   const queryClient = useQueryClient();
@@ -487,6 +489,134 @@ export function useTransactions() {
     },
   });
 
+  const bulkImportTransactions = useMutation({
+    mutationFn: async (transactionsData: Partial<Transaction>[]) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("User not authenticated");
+
+      // Validate all transactions first
+      for (const txnData of transactionsData) {
+        try {
+          transactionSchema.parse(txnData);
+        } catch (error) {
+          if (error instanceof z.ZodError) {
+            throw new Error(`Validation failed: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+          }
+          throw error;
+        }
+      }
+
+      // Resolve all account IDs
+      const accountByName = new Map<string, string>();
+      const accountByCode = new Map<string, string>();
+      const { data: allAccounts } = await supabase.from("accounts").select("id, name, code");
+      
+      if (allAccounts) {
+        allAccounts.forEach(acc => {
+          accountByName.set(acc.name.toLowerCase(), acc.id);
+          if (acc.code) {
+            accountByCode.set(acc.code.toLowerCase(), acc.id);
+          }
+        });
+      }
+
+      // Find leaf accounts
+      const { data: allAccountsWithChildren } = await supabase.from("accounts").select("id, parent_id");
+      const childrenMap = new Map<string, string[]>();
+      allAccountsWithChildren?.forEach(acc => {
+        if (acc.parent_id) {
+          if (!childrenMap.has(acc.parent_id)) {
+            childrenMap.set(acc.parent_id, []);
+          }
+          childrenMap.get(acc.parent_id)!.push(acc.id);
+        }
+      });
+      const leafAccountIds = new Set(
+        allAccountsWithChildren
+          ?.filter(acc => !childrenMap.has(acc.id))
+          .map(acc => acc.id) || []
+      );
+
+      // Prepare insert data
+      const insertData = await Promise.all(transactionsData.map(async (txnData) => {
+        let accountFromId: string | null = null;
+        let accountToId: string | null = null;
+
+        if (txnData.accountFrom) {
+          accountFromId = accountByName.get(txnData.accountFrom.toLowerCase()) || 
+                         accountByCode.get(txnData.accountFrom.toLowerCase()) ||
+                         txnData.accountFromId || null;
+          
+          if (accountFromId && !leafAccountIds.has(accountFromId)) {
+            throw new Error(`Account "${txnData.accountFrom}" is a parent account and cannot be used`);
+          }
+        }
+
+        if (txnData.accountTo) {
+          accountToId = accountByName.get(txnData.accountTo.toLowerCase()) || 
+                       accountByCode.get(txnData.accountTo.toLowerCase()) ||
+                       txnData.accountToId || null;
+          
+          if (accountToId && !leafAccountIds.has(accountToId)) {
+            throw new Error(`Account "${txnData.accountTo}" is a parent account and cannot be used`);
+          }
+        }
+
+        if (txnData.type === 'transfer' && accountFromId && accountToId && accountFromId === accountToId) {
+          throw new Error('From and To accounts must be different for transfer transactions');
+        }
+
+        return {
+          date: txnData.date,
+          type: txnData.type,
+          description: txnData.description,
+          amount: txnData.amount,
+          status: txnData.status || 'pending',
+          reference: txnData.reference || null,
+          notes: txnData.notes || null,
+          account_from: accountFromId,
+          account_to: accountToId,
+          created_by: user.id,
+        };
+      }));
+
+      // Insert all transactions in a single database transaction
+      const { data, error } = await supabase
+        .from("transactions")
+        .insert(insertData)
+        .select();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: async (data) => {
+      // Create activity log entry
+      await createActivityLog({
+        module: "transactions",
+        actionType: "import",
+        description: `Imported ${data.length} transaction(s) from CSV`,
+        entityType: "transaction",
+        metadata: {
+          count: data.length,
+          transactionIds: data.map(t => t.id),
+        },
+      });
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["accounts"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["activityLogs"] }),
+      ]);
+      await queryClient.refetchQueries({ queryKey: ["transactions"] });
+      await queryClient.refetchQueries({ queryKey: ["accounts"] });
+      toast.success(`${data.length} transaction(s) imported successfully`);
+    },
+    onError: (error: Error) => {
+      toast.error("Failed to import transactions", error.message);
+    },
+  });
+
   // Memoize refetch function to prevent unnecessary re-renders
   const refetch = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["transactions"] });
@@ -502,5 +632,6 @@ export function useTransactions() {
     updateTransaction: updateTransaction.mutateAsync,
     deleteTransactions: deleteTransactions.mutateAsync,
     bulkUpdateStatus: bulkUpdateStatus.mutateAsync,
+    bulkImportTransactions: bulkImportTransactions.mutateAsync,
   };
 }

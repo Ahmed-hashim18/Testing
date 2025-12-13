@@ -4,11 +4,12 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Eye, Edit, Download, Trash2 } from "lucide-react";
+import { Plus, Eye, Edit, Download, Trash2, Upload } from "lucide-react";
 import { TransactionFilters } from "@/components/transactions/TransactionFilters";
 import { TransactionDetailDialog } from "@/components/transactions/TransactionDetailDialog";
 import { TransactionFormDialog } from "@/components/transactions/TransactionFormDialog";
 import { TransactionBulkActionsBar } from "@/components/transactions/TransactionBulkActionsBar";
+import { ImportTransactionsDialog } from "@/components/transactions/ImportTransactionsDialog";
 import { CollapsibleFilters } from "@/components/common/CollapsibleFilters";
 import { Transaction, TransactionFilters as Filters } from "@/types/transaction";
 import { format } from "date-fns";
@@ -17,7 +18,7 @@ import { useAccounts } from "@/hooks/useAccounts";
 import { LoadingSpinner } from "@/components/loading/LoadingSpinner";
 
 export default function Transactions() {
-  const { transactions, isLoading, createTransaction, updateTransaction, deleteTransactions, bulkUpdateStatus } = useTransactions();
+  const { transactions, isLoading, createTransaction, updateTransaction, deleteTransactions, bulkUpdateStatus, bulkImportTransactions } = useTransactions();
   const { accounts, isLoading: isLoadingAccounts } = useAccounts();
   
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -25,6 +26,7 @@ export default function Transactions() {
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null);
   const [showDetailDialog, setShowDetailDialog] = useState(false);
   const [showFormDialog, setShowFormDialog] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
   const [filters, setFilters] = useState<Filters>({
     search: "",
     status: "all",
@@ -193,6 +195,10 @@ export default function Transactions() {
             <Download className="h-4 w-4 mr-2" />
             Export CSV
           </Button>
+          <Button variant="outline" onClick={() => setShowImportDialog(true)}>
+            <Upload className="h-4 w-4 mr-2" />
+            Import Transactions
+          </Button>
           <Button onClick={handleCreate}>
             <Plus className="h-4 w-4 mr-2" />
             New Transaction
@@ -307,6 +313,13 @@ export default function Transactions() {
         open={showFormDialog}
         onOpenChange={setShowFormDialog}
         onSave={handleSave}
+        accounts={accounts}
+      />
+
+      <ImportTransactionsDialog
+        open={showImportDialog}
+        onOpenChange={setShowImportDialog}
+        onImport={bulkImportTransactions}
         accounts={accounts}
       />
     </div>
