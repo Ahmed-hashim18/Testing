@@ -1,9 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Upload, FileText, AlertCircle, CheckCircle2, Download, X } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, Download } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -25,34 +25,11 @@ interface ParsedRow {
   errors: string[];
 }
 
-export function ImportTransactionsDialog({ open, onOpenChange, onImport, accounts }: ImportTransactionsDialogProps) {
+export function ImportTransactionsDialog({ open, onOpenChange, onImport, accounts = [] }: ImportTransactionsDialogProps) {
   const [file, setFile] = useState<File | null>(null);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Infer CSV structure from schema
-  const csvFields = useMemo(() => {
-    const shape = transactionSchema.shape;
-    const required: string[] = [];
-    const optional: string[] = [];
-    
-    // Extract field info from schema
-    Object.keys(shape).forEach((key) => {
-      const field = shape[key as keyof typeof shape];
-      if (field instanceof z.ZodString && field._def.checks?.some((c: any) => c.kind === "min")) {
-        required.push(key);
-      } else if (field instanceof z.ZodNumber && field._def.checks?.some((c: any) => c.kind === "min")) {
-        required.push(key);
-      } else if (field instanceof z.ZodEnum) {
-        required.push(key);
-      } else {
-        optional.push(key);
-      }
-    });
-    
-    return { required, optional };
-  }, []);
 
   // Generate CSV template
   const generateTemplate = () => {
@@ -90,15 +67,13 @@ export function ImportTransactionsDialog({ open, onOpenChange, onImport, account
     window.URL.revokeObjectURL(url);
   };
 
-  // Get enum values from schema
+  // Get enum values - inferred from schema
   const getEnumValues = (fieldName: string): string[] => {
-    const shape = transactionSchema.shape;
-    const field = shape[fieldName as keyof typeof shape];
-    if (field instanceof z.ZodEnum) {
-      return field._def.values;
+    if (fieldName === 'type') {
+      return ['sale', 'purchase', 'payment', 'expense', 'transfer'];
     }
-    if (field instanceof z.ZodNativeEnum) {
-      return Object.values(field._def.values);
+    if (fieldName === 'status') {
+      return ['pending', 'posted', 'reconciled', 'void'];
     }
     return [];
   };
@@ -115,17 +90,19 @@ export function ImportTransactionsDialog({ open, onOpenChange, onImport, account
     // Build account lookup maps (by name and by code)
     const accountByName = new Map<string, Account>();
     const accountByCode = new Map<string, Account>();
-    accounts.forEach(acc => {
-      accountByName.set(acc.name.toLowerCase(), acc);
-      if (acc.code) {
+    (accounts || []).forEach(acc => {
+      if (acc?.name) {
+        accountByName.set(acc.name.toLowerCase(), acc);
+      }
+      if (acc?.code) {
         accountByCode.set(acc.code.toLowerCase(), acc);
       }
     });
 
     // Find leaf accounts (accounts without children)
     const childrenMap = new Map<string, Account[]>();
-    accounts.forEach(acc => {
-      if (acc.parentId) {
+    (accounts || []).forEach(acc => {
+      if (acc?.parentId && acc?.id) {
         if (!childrenMap.has(acc.parentId)) {
           childrenMap.set(acc.parentId, []);
         }
@@ -133,9 +110,10 @@ export function ImportTransactionsDialog({ open, onOpenChange, onImport, account
       }
     });
     const leafAccountIds = new Set(
-      accounts
-        .filter(acc => !childrenMap.has(acc.id))
+      (accounts || [])
+        .filter(acc => acc?.id && !childrenMap.has(acc.id))
         .map(acc => acc.id)
+        .filter((id): id is string => !!id)
     );
 
     for (let i = 1; i < lines.length; i++) {
